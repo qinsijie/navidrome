@@ -1,0 +1,14 @@
+appname               = navidrome
+version               = 0.64.2
+display_name          = Navidrome
+desc                  = 轻量级高性能个人音乐服务器，支持飞牛内嵌与 Hi-Fi 串流
+arch                  = x86_64
+source                = thirdparty
+maintainer            = Navidrome
+distributor           = Navidrome
+platform              = 
+desktop_uidir         = ui
+desktop_applaunchname = navidrome
+protocol              = http
+port                  = 4533
+url                   = http://{{host}}:4533

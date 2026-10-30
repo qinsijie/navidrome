@@ -3,7 +3,15 @@ APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$APP_DIR/app/navidrome"
 CONFIG="$APP_DIR/config/navidrome.toml"
 
-chmod +x "$BIN"
-mkdir -p /var/apps/navidrome/data
+DATA_DIR="${TRIM_PKGVAR:-/vol1/@appdata/navidrome}"
+mkdir -p "${DATA_DIR}/data/cache" 2>/dev/null || mkdir -p /tmp/navidrome/data/cache
+chmod -R 777 "${DATA_DIR}" 2>/dev/null || true
 
-exec "$BIN" --configfile "$CONFIG" >> /var/log/navidrome.log 2>&1 &
+cd "$APP_DIR" 2>/dev/null || true
+ln -sfn "${DATA_DIR}" "$APP_DIR/var" 2>/dev/null || true
+
+chmod +x "$BIN"
+export ND_DATAFOLDER="${DATA_DIR}/data"
+export ND_CACHEFOLDER="${DATA_DIR}/data/cache"
+
+exec "$BIN" --configfile "$CONFIG" >> "${DATA_DIR}/navidrome.log" 2>&1 &

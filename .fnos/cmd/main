@@ -1,0 +1,58 @@
+#!/bin/bash
+LOG_FILE="${TRIM_PKGVAR:-/vol1/@appdata/navidrome}/info.log"
+PID_FILE="${TRIM_PKGVAR:-/vol1/@appdata/navidrome}/app.pid"
+CMD="${TRIM_APPDEST:-/var/apps/navidrome}/app/navidrome --configfile ${TRIM_APPDEST:-/var/apps/navidrome}/config/navidrome.toml"
+
+log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"; }
+
+start_process() {
+    if status; then return 0; fi
+    log_msg "Starting process ..."
+    
+    # 确保专属持久化数据目录存在
+    DATA_DIR="${TRIM_PKGVAR:-/vol1/@appdata/navidrome}"
+    mkdir -p "${DATA_DIR}/data/cache"
+    chmod -R 777 "${DATA_DIR}" 2>/dev/null || true
+
+    # 切换至应用安装目录并保证软链接与环境变量
+    cd "${TRIM_APPDEST:-/var/apps/navidrome}" 2>/dev/null || true
+    ln -sfn "${DATA_DIR}" "${TRIM_APPDEST:-/var/apps/navidrome}/var" 2>/dev/null || true
+
+    export ND_DATAFOLDER="${DATA_DIR}/data"
+    export ND_CACHEFOLDER="${DATA_DIR}/data/cache"
+
+    # 启动进程并重定向输出
+    bash -c "${CMD}" >> "${LOG_FILE}" 2>&1 &
+    printf "%s" "$!" > "${PID_FILE}"
+    return 0
+}
+
+stop_process() {
+    log_msg "Stopping process ..."
+    if [ -r "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -TERM "${pid}" >> "${LOG_FILE}" 2>&1
+            sleep 1
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    pkill -f "navidrome --configfile" || true
+    return 0
+}
+
+status() {
+    if [ -f "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if kill -0 "${pid}" 2>/dev/null; then return 0; else rm -f "${PID_FILE}"; fi
+    fi
+    if pgrep -f "navidrome --configfile" > /dev/null 2>&1; then return 0; fi
+    return 1
+}
+
+case $1 in
+    start) start_process ;;
+    stop) stop_process ;;
+    status) if status; then exit 0; else exit 3; fi ;;
+    *) exit 1 ;;
+esac

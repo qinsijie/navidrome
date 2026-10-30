@@ -1,6 +1,6 @@
 {
   "name": "navidrome",
-  "version": "0.54.0",
+  "version": "0.64.2",
   "title": "Navidrome",
   "description": "轻量级高性能个人音乐服务器，支持飞牛内嵌与 Hi-Fi 串流",
   "developer": "Navidrome",
