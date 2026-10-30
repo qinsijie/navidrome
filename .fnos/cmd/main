@@ -5,21 +5,54 @@ CMD="${TRIM_APPDEST:-/var/apps/navidrome}/app/navidrome --configfile ${TRIM_APPD
 
 log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"; }
 
-start_process() {
-    if status; then return 0; fi
-    log_msg "Starting process ..."
-    
-    # 确保专属持久化数据目录存在
+setup_directories_and_pool() {
     DATA_DIR="${TRIM_PKGVAR:-/vol1/@appdata/navidrome}"
-    mkdir -p "${DATA_DIR}/data/cache"
+    APP_DIR="${TRIM_APPDEST:-/var/apps/navidrome}"
+    POOL_DIR="${DATA_DIR}/music_pool"
+
+    # 1. 确保核心持久化目录
+    mkdir -p "${DATA_DIR}/data/cache" "${POOL_DIR}"
     chmod -R 777 "${DATA_DIR}" 2>/dev/null || true
 
-    # 切换至应用安装目录并保证软链接与环境变量
-    cd "${TRIM_APPDEST:-/var/apps/navidrome}" 2>/dev/null || true
-    ln -sfn "${DATA_DIR}" "${TRIM_APPDEST:-/var/apps/navidrome}/var" 2>/dev/null || true
+    # 2. 建立应用主目录中的 var 软链接
+    cd "${APP_DIR}" 2>/dev/null || true
+    ln -sfn "${DATA_DIR}" "${APP_DIR}/var" 2>/dev/null || true
+
+    # 3. 动态探测并池化飞牛已授权的媒体存储卷目录 (/vol*)
+    log_msg "Scanning available media directories in /vol* ..."
+    local found_any=0
+    for vol in /vol*; do
+        [ -d "${vol}" ] || continue
+        # 扫描常见音乐目录与外部分享目录
+        for sub in Music music Media/Music media/music "我的音乐" "音乐"; do
+            target="${vol}/${sub}"
+            if [ -d "${target}" ] && [ -r "${target}" ]; then
+                vol_name=$(basename "${vol}")
+                safe_name="${vol_name}_$(echo "${sub}" | tr '/' '_')"
+                ln -sfn "${target}" "${POOL_DIR}/${safe_name}" 2>/dev/null || true
+                log_msg "Linked library pool source: ${target} -> ${POOL_DIR}/${safe_name}"
+                found_any=1
+            fi
+        done
+    done
+
+    # 若未检测到任何现有 Music 目录，提供保底默认音乐目录
+    if [ "${found_any}" -eq 0 ]; then
+        mkdir -p "${DATA_DIR}/Music"
+        ln -sfn "${DATA_DIR}/Music" "${POOL_DIR}/default_Music" 2>/dev/null || true
+        log_msg "No external music dir detected. Created fallback pool dir: ${DATA_DIR}/Music"
+    fi
 
     export ND_DATAFOLDER="${DATA_DIR}/data"
     export ND_CACHEFOLDER="${DATA_DIR}/data/cache"
+    export ND_MUSICFOLDER="${POOL_DIR}"
+}
+
+start_process() {
+    if status; then return 0; fi
+    log_msg "Starting Navidrome process ..."
+    
+    setup_directories_and_pool
 
     # 启动进程并重定向输出
     bash -c "${CMD}" >> "${LOG_FILE}" 2>&1 &
@@ -28,7 +61,7 @@ start_process() {
 }
 
 stop_process() {
-    log_msg "Stopping process ..."
+    log_msg "Stopping Navidrome process ..."
     if [ -r "${PID_FILE}" ]; then
         pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
         if kill -0 "${pid}" 2>/dev/null; then

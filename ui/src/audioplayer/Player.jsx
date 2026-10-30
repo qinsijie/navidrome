@@ -424,6 +424,69 @@ const Player = () => {
     }
   }, [isMobilePlayer, audioInstance])
 
+  // MediaSession position state & mobile background resume breakpoint recovery
+  useEffect(() => {
+    if (!audioInstance) return
+
+    // Update MediaSession Position State when playback timing changes
+    const updatePositionState = () => {
+      if (
+        'mediaSession' in navigator &&
+        'setPositionState' in navigator.mediaSession &&
+        audioInstance.duration &&
+        !isNaN(audioInstance.duration) &&
+        isFinite(audioInstance.duration)
+      ) {
+        try {
+          navigator.mediaSession.setPositionState({
+            duration: audioInstance.duration,
+            playbackRate: audioInstance.playbackRate || 1,
+            position: Math.min(
+              audioInstance.currentTime || 0,
+              audioInstance.duration,
+            ),
+          })
+        } catch (e) {
+          // Ignore transient errors on rapid state transitions
+        }
+      }
+    }
+
+    // Recover playback position on mobile Webview/tab resume if stream stalled or reset to 0
+    const handleVisibilityOrResume = () => {
+      if (document.visibilityState === 'visible' && audioInstance) {
+        const savedPosSec = (lastPositionMsRef.current || 0) / 1000
+        if (
+          savedPosSec > 2 &&
+          (audioInstance.currentTime === 0 || audioInstance.currentTime == null) &&
+          !audioInstance.ended &&
+          currentTrackIdRef.current
+        ) {
+          try {
+            audioInstance.currentTime = savedPosSec
+            if (!audioInstance.paused) {
+              audioInstance.play().catch(() => {})
+            }
+          } catch (e) {
+            // Seek failed or media loading
+          }
+        }
+      }
+    }
+
+    audioInstance.addEventListener('timeupdate', updatePositionState)
+    audioInstance.addEventListener('durationchange', updatePositionState)
+    document.addEventListener('visibilitychange', handleVisibilityOrResume)
+    window.addEventListener('online', handleVisibilityOrResume)
+
+    return () => {
+      audioInstance.removeEventListener('timeupdate', updatePositionState)
+      audioInstance.removeEventListener('durationchange', updatePositionState)
+      document.removeEventListener('visibilitychange', handleVisibilityOrResume)
+      window.removeEventListener('online', handleVisibilityOrResume)
+    }
+  }, [audioInstance])
+
   // Report every seek (including programmatic ones the library does not surface
   // via onAudioSeeked, e.g. restartCurrentOnPrev). Debounce coalesces drag
   // bursts into one report at the final position.

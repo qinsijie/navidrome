@@ -22,36 +22,6 @@ jobs:
           tar -zxvf navidrome.tar.gz -C build_pkg/app/ navidrome
           chmod +x build_pkg/app/navidrome
 
-      - name: Assemble Files
-        run: |
-          cp -r .fnos/* build_pkg/
-          chmod +x build_pkg/service/* build_pkg/cmd/* build_pkg/scripts/* 2>/dev/null || true
-
-      - name: Create FPK Package (Root tar format)
-        run: |
-          cd build_pkg
-          # 关键打包参数：明确格式为 gnu，消除绝对路径前缀，Owner/Group 归零
-          tar --numeric-owner --group=0 --owner=0 --format=gnu -zcvf ../navidrome-x86_64.fpk *
-          cd ..
-
-      - name: Create FPK Package (Debian / ar format)
-        run: |
-          mkdir -p deb_pkg/DEBIAN
-          mkdir -p deb_pkg/var/apps/navidrome
-          cp -r build_pkg/* deb_pkg/var/apps/navidrome/
-          cat <<EOF > deb_pkg/DEBIAN/control
-          Package: navidrome
-          Version: 0.64.2
-          Architecture: amd64
-          Maintainer: Navidrome
-          Description: Lightweight and fast personal music server for fnOS
-          EOF
-          if [ -f build_pkg/scripts/postinst ]; then
-            cp build_pkg/scripts/postinst deb_pkg/DEBIAN/postinst
-            chmod 755 deb_pkg/DEBIAN/postinst
-          fi
-          dpkg-deb -Zgzip --build --root-owner-group deb_pkg navidrome-deb-x86_64.fpk
-
       - name: Create FPK Package (Official fnpack format)
         run: |
           curl -sL https://raw.githubusercontent.com/boater-man/FnDepot/main/fnpack-1.2.1-linux-amd64 -o /tmp/fnpack
@@ -89,10 +59,16 @@ jobs:
             cp .fnos/ui/images/* navidrome_build/app/ui/images/
           fi
 
-          cd navidrome_build && /tmp/fnpack build && cp navidrome.fpk ../navidrome-fnpack-x86_64.fpk && cd ..
+          cd navidrome_build
+          /tmp/fnpack build
+          PKG_VER=$(grep -E '^[[:space:]]*version[[:space:]]*=' manifest | awk -F'=' '{gsub(/[[:space:]]/, "", $2); print $2}')
+          echo "Packaging version: $PKG_VER"
+          cp navidrome.fpk "../navidrome-x86_64-v${PKG_VER}.fpk"
+          cd ..
+          ls -lh navidrome-x86_64-v*.fpk
 
       - name: Upload FPK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: navidrome-fnos-fpk
-          path: "*.fpk"
+          path: navidrome-x86_64-v*.fpk
