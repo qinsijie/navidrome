@@ -1,2 +1,2 @@
 #!/bin/bash
-pkill -f "navidrome --configfile"
+pkill -f "navidrome --configfile" || true

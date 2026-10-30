@@ -22,20 +22,105 @@ jobs:
           tar -zxvf navidrome.tar.gz -C build_pkg/app/ navidrome
           chmod +x build_pkg/app/navidrome
 
-      - name: Assemble FPK Directory
+      - name: Assemble Files
         run: |
           cp -r .fnos/* build_pkg/
-          chmod +x build_pkg/service/start
-          chmod +x build_pkg/service/stop
+          chmod +x build_pkg/service/start build_pkg/service/stop build_pkg/service/status
+          chmod +x build_pkg/scripts/postinst || true
 
-      - name: Create FPK Archive
+      - name: Create FPK Package (Root tar format)
         run: |
           cd build_pkg
-          tar -zcvf ../navidrome-x86_64.fpk *
+          # 关键打包参数：明确格式为 gnu，消除绝对路径前缀，Owner/Group 归零
+          tar --numeric-owner --group=0 --owner=0 --format=gnu -zcvf ../navidrome-x86_64.fpk *
           cd ..
+
+      - name: Create FPK Package (Debian / ar format)
+        run: |
+          mkdir -p deb_pkg/DEBIAN
+          mkdir -p deb_pkg/var/apps/navidrome
+          cp -r build_pkg/* deb_pkg/var/apps/navidrome/
+          cat <<EOF > deb_pkg/DEBIAN/control
+          Package: navidrome
+          Version: 0.54.0
+          Architecture: amd64
+          Maintainer: Navidrome
+          Description: Lightweight and fast personal music server for fnOS
+          EOF
+          if [ -f build_pkg/scripts/postinst ]; then
+            cp build_pkg/scripts/postinst deb_pkg/DEBIAN/postinst
+            chmod 755 deb_pkg/DEBIAN/postinst
+          fi
+          dpkg-deb -Zgzip --build --root-owner-group deb_pkg navidrome-deb-x86_64.fpk
+
+      - name: Create FPK Package (Official fnpack format)
+        run: |
+          curl -sL https://raw.githubusercontent.com/boater-man/FnDepot/main/fnpack-1.2.1-linux-amd64 -o /tmp/fnpack
+          chmod +x /tmp/fnpack
+          /tmp/fnpack create navidrome_fnpack --without-ui true
+          cp .fnos/logo.png navidrome_fnpack/ICON_256.PNG
+          cp .fnos/logo.png navidrome_fnpack/ICON.PNG
+          cat <<EOF > navidrome_fnpack/manifest
+          appname      = navidrome
+          version      = 0.54.0
+          display_name = Navidrome
+          desc         = 轻量级高性能个人音乐服务器，支持飞牛内嵌与 Hi-Fi 串流
+          arch         = x86_64
+          source       = thirdparty
+          maintainer   = Navidrome
+          distributor  = Navidrome
+          EOF
+          cat <<'EOF' > navidrome_fnpack/cmd/main
+          #!/bin/bash
+          LOG_FILE="${TRIM_PKGVAR}/info.log"
+          PID_FILE="${TRIM_PKGVAR}/app.pid"
+          CMD="${TRIM_APPDEST}/app/navidrome --configfile ${TRIM_APPDEST}/config/navidrome.toml"
+          log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> ${LOG_FILE}; }
+          start_process() {
+              if status; then return 0; fi
+              log_msg "Starting process ..."
+              mkdir -p "${TRIM_PKGVAR}/data"
+              bash -c "${CMD}" >> ${LOG_FILE} 2>&1 &
+              printf "%s" "$!" > ${PID_FILE}
+              return 0
+          }
+          stop_process() {
+              log_msg "Stopping process ..."
+              if [ -r "${PID_FILE}" ]; then
+                  pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+                  if kill -0 "${pid}" 2>/dev/null; then
+                      kill -TERM "${pid}" >> ${LOG_FILE} 2>&1
+                      sleep 1
+                  fi
+                  rm -f "${PID_FILE}"
+              fi
+              pkill -f "navidrome --configfile" || true
+              return 0
+          }
+          status() {
+              if [ -f "${PID_FILE}" ]; then
+                  pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+                  if kill -0 "${pid}" 2>/dev/null; then return 0; else rm -f "${PID_FILE}"; fi
+              fi
+              if pgrep -f "navidrome --configfile" > /dev/null 2>&1; then return 0; fi
+              return 1
+          }
+          case $1 in
+              start) start_process ;;
+              stop) stop_process ;;
+              status) if status; then exit 0; else exit 3; fi ;;
+              *) exit 1 ;;
+          esac
+          EOF
+          chmod +x navidrome_fnpack/cmd/main
+          mkdir -p navidrome_fnpack/app/app navidrome_fnpack/app/config
+          cp build_pkg/app/navidrome navidrome_fnpack/app/app/
+          cp .fnos/config/navidrome.toml navidrome_fnpack/app/config/
+          chmod +x navidrome_fnpack/app/app/navidrome
+          cd navidrome_fnpack && /tmp/fnpack build && cp navidrome.fpk ../navidrome-fnpack-x86_64.fpk && cd ..
 
       - name: Upload FPK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: navidrome-fnos-fpk
-          path: navidrome-x86_64.fpk
+          path: "*.fpk"

@@ -2,14 +2,14 @@
   "name": "navidrome",
   "version": "0.54.0",
   "title": "Navidrome",
-  "description": "轻量级高性能个人音乐服务器，支持飞牛内嵌、无损流媒体与未来 Hi-Fi 扩展",
+  "description": "轻量级高性能个人音乐服务器，支持飞牛内嵌与 Hi-Fi 串流",
+  "developer": "Navidrome",
   "icon": "logo.png",
-  "developer": "Navidrome / fnOS Packaged",
   "port": 4533,
   "index": "/",
   "protocols": ["http"],
   "support_remote": true,
   "system": {
-    "arch": ["x86_64"]
+    "arch": ["x86_64", "amd64"]
   }
 }
