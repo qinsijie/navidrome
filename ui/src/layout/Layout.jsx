@@ -10,7 +10,7 @@ import useCurrentTheme from '../themes/useCurrentTheme'
 import { useSearchRefocus } from '../common'
 
 const useStyles = makeStyles({
-  root: { paddingBottom: (props) => (props.addPadding ? '80px' : 0) },
+  root: { paddingBottom: '80px !important' },
 })
 
 const Layout = (props) => {

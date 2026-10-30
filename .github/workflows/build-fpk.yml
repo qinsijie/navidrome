@@ -13,13 +13,37 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Download Navidrome Binary
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          check-latest: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libtag1-dev
+
+      - name: Build Frontend UI
+        run: |
+          cd ui
+          npm ci
+          npm run build
+          cd ..
+
+      - name: Build Navidrome Binary
         run: |
           mkdir -p build_pkg/app
-          TAG=$(curl -s https://api.github.com/repos/navidrome/navidrome/releases/latest | jq -r .tag_name)
-          echo "Target tag: $TAG"
-          curl -sL "https://github.com/navidrome/navidrome/releases/download/${TAG}/navidrome_${TAG#v}_linux_amd64.tar.gz" -o navidrome.tar.gz
-          tar -zxvf navidrome.tar.gz -C build_pkg/app/ navidrome
+          PKG_VER=$(grep -E '^[[:space:]]*version[[:space:]]*=' .fnos/manifest | awk -F'=' '{gsub(/[[:space:]]/, "", $2); print $2}')
+          echo "Building Navidrome v${PKG_VER}..."
+          go build -tags=netgo,sqlite_fts5 \
+            -ldflags="-s -w -X github.com/navidrome/navidrome/consts.gitSha=${{ github.sha }} -X github.com/navidrome/navidrome/consts.gitTag=v${PKG_VER}" \
+            -o build_pkg/app/navidrome .
           chmod +x build_pkg/app/navidrome
 
       - name: Create FPK Package (Official fnpack format)

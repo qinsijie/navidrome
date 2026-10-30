@@ -1,8 +1,8 @@
 {
   "name": "navidrome",
-  "version": "0.64.2",
+  "version": "0.64.3",
   "title": "Navidrome",
-  "description": "轻量级高性能个人音乐服务器，支持飞牛内嵌与 Hi-Fi 串流",
+  "description": "轻量级高性能个人音乐服务器，支持飞牛内嵌、Hi-Fi 串流与 DLNA/HQPlayer 源码输出",
   "developer": "Navidrome",
   "icon": "logo.png",
   "port": 4533,

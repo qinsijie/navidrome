@@ -21,12 +21,79 @@ const useStyle = makeStyles(
       fontSize: 'smaller',
     },
     qualityInfo: {
-      marginTop: '-4px',
-      opacity: 0,
-      transition: 'all 500ms ease-out',
+      display: 'inline-flex',
+      marginLeft: '8px',
+      verticalAlign: 'middle',
+      opacity: '1 !important',
     },
     player: {
       display: (props) => (props.visible ? 'block' : 'none'),
+      '& .music-player': {
+        display: 'none !important',
+      },
+      '& .music-player-controller': {
+        display: 'none !important',
+      },
+      '& .destroy-btn': {
+        display: 'none !important',
+      },
+      '& .hide-panel': {
+        display: 'none !important',
+      },
+      '& .music-player-panel': {
+        position: 'fixed !important',
+        bottom: '0 !important',
+        left: '0 !important',
+        width: '100vw !important',
+        height: '72px !important',
+        zIndex: '1300 !important',
+        boxShadow: '0 -2px 10px rgba(0, 0, 0, 0.15) !important',
+        backgroundColor: `${theme.palette.background.paper} !important`,
+        borderTop: `1px solid ${theme.palette.divider} !important`,
+        color: `${theme.palette.text.primary} !important`,
+        transition: 'none !important',
+        transform: 'none !important',
+      },
+      '& .music-player-panel .panel-content': {
+        height: '72px !important',
+        display: 'flex !important',
+        alignItems: 'center !important',
+        justifyContent: 'space-between !important',
+        padding: '0 24px !important',
+        boxSizing: 'border-box !important',
+      },
+      '& .music-player-panel .panel-content .img-content': {
+        width: '48px !important',
+        height: '48px !important',
+        minWidth: '48px !important',
+        borderRadius: '6px !important',
+        marginRight: '12px !important',
+      },
+      '& .music-player-panel .panel-content div.img-rotate': {
+        width: '48px !important',
+        height: '48px !important',
+        minWidth: '48px !important',
+        borderRadius: '6px !important',
+        animation: 'none !important',
+        backgroundSize: 'cover !important',
+        backgroundPosition: 'center !important',
+      },
+      '& .music-player-panel .panel-content .progress-bar-content': {
+        display: 'flex !important',
+        flexDirection: 'column !important',
+        justifyContent: 'center !important',
+        flex: '1 1 auto !important',
+        padding: '0 20px !important',
+        maxWidth: 'calc(100vw - 360px)',
+      },
+      '& .music-player-panel .panel-content .player-content': {
+        display: 'flex !important',
+        alignItems: 'center !important',
+        flexShrink: 0,
+      },
+      '& .music-player-panel .panel-content .player-content .group': {
+        margin: '0 6px !important',
+      },
       '@media screen and (max-width:810px)': {
         '& .sound-operation': {
           display: 'none',

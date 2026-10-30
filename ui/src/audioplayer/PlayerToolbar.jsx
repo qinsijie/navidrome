@@ -9,6 +9,7 @@ import { LoveButton, useToggleLove } from '../common'
 import { openSaveQueueDialog } from '../actions'
 import { keyMap } from '../hotkeys'
 import { makeStyles } from '@material-ui/core/styles'
+import OutputDeviceSelector from './OutputDeviceSelector'
 
 const useStyles = makeStyles((theme) => ({
   toolbar: {
@@ -99,16 +100,22 @@ const PlayerToolbar = ({ id, isRadio }) => {
     />
   )
 
+  const outputSelector = (
+    <OutputDeviceSelector isDesktop={isDesktop} className={buttonClass} />
+  )
+
   return (
     <>
       <GlobalHotKeys keyMap={keyMap} handlers={handlers} allowChanges />
       {isDesktop ? (
         <li className={`${listItemClass} item`}>
+          {outputSelector}
           {saveQueueButton}
           {loveButton}
         </li>
       ) : (
         <>
+          <li className={`${listItemClass} item`}>{outputSelector}</li>
           <li className={`${listItemClass} item`}>{saveQueueButton}</li>
           <li className={`${listItemClass} item`}>{loveButton}</li>
         </>

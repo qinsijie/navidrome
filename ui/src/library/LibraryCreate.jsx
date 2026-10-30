@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import PropTypes from 'prop-types'
 import {
   Create,
@@ -10,11 +10,81 @@ import {
   useMutation,
   useNotify,
   useRedirect,
+  useInput,
 } from 'react-admin'
-import { Typography } from '@material-ui/core'
+import { TextField, Typography } from '@material-ui/core'
+import Autocomplete from '@material-ui/lab/Autocomplete'
 import { makeStyles } from '@material-ui/core/styles'
 import { Title } from '../common'
 import { PIDInputs } from './PIDInput'
+import { httpClient } from '../dataProvider'
+
+const PathInput = ({ source, validate, fullWidth }) => {
+  const {
+    input: { value, onChange },
+    meta: { touched, error },
+  } = useInput({ source, validate })
+  const translate = useTranslate()
+  const [options, setOptions] = useState([])
+
+  useEffect(() => {
+    httpClient('/api/system/paths')
+      .then(({ json }) => {
+        if (Array.isArray(json)) {
+          setOptions(json)
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  return (
+    <Autocomplete
+      freeSolo
+      options={options}
+      getOptionLabel={(option) =>
+        typeof option === 'string'
+          ? option
+          : option.name
+            ? `${option.name} (${option.path})`
+            : option.path || ''
+      }
+      value={value || ''}
+      onInputChange={(event, newInputValue) => {
+        onChange(newInputValue)
+      }}
+      onChange={(event, newValue) => {
+        if (typeof newValue === 'string') {
+          onChange(newValue)
+        } else if (newValue && newValue.path) {
+          onChange(newValue.path)
+        } else {
+          onChange('')
+        }
+      }}
+      renderInput={(params) => (
+        <TextField
+          {...params}
+          label={translate('resources.library.fields.path')}
+          variant="outlined"
+          margin="dense"
+          fullWidth={fullWidth}
+          error={!!(touched && error)}
+          helperText={
+            touched && error
+              ? translate(error)
+              : '选择飞牛授权存储卷路径或直接输入物理路径'
+          }
+        />
+      )}
+    />
+  )
+}
+
+PathInput.propTypes = {
+  source: PropTypes.string.isRequired,
+  validate: PropTypes.array,
+  fullWidth: PropTypes.bool,
+}
 
 const useStyles = makeStyles((theme) => ({
   spaced: { marginTop: theme.spacing(3) },
@@ -103,7 +173,7 @@ const LibraryCreate = (props) => {
       <SimpleForm save={save} variant={'outlined'}>
         <SectionTitle label="resources.library.sections.basic" />
         <TextInput source="name" validate={[required()]} />
-        <TextInput source="path" validate={[required()]} fullWidth />
+        <PathInput source="path" validate={[required()]} fullWidth />
         <BooleanInput source="defaultNewUsers" />
         <SectionTitle label="resources.library.sections.pid" spaced />
         <PIDInputs />
