@@ -1,0 +1,9 @@
+#!/bin/bash
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$APP_DIR/app/navidrome"
+CONFIG="$APP_DIR/config/navidrome.toml"
+
+chmod +x "$BIN"
+mkdir -p /var/apps/navidrome/data
+
+exec "$BIN" --configfile "$CONFIG" >> /var/log/navidrome.log 2>&1 &

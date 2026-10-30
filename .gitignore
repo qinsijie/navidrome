@@ -13,6 +13,7 @@ TODO.md
 var
 navidrome.toml
 !release/linux/navidrome.toml
+!.fnos/config/navidrome.toml
 master.zip
 testDB
 cache/*

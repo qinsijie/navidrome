@@ -1,0 +1,13 @@
+# Navidrome 默认飞牛环境配置文件
+Address = "0.0.0.0"
+Port = 4533
+MusicFolder = "/vol1/Music"
+DataFolder = "/var/apps/navidrome/data"
+ScanSchedule = "@every 1h"
+LogLevel = "info"
+
+# 外部轻度刮削凭证（后续可填入测试）
+Spotify.ID = ""
+Spotify.Secret = ""
+LastFM.ApiKey = ""
+LastFM.Secret = ""

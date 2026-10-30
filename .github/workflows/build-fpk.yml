@@ -1,0 +1,41 @@
+name: Build fnOS FPK Package
+
+on:
+  push:
+    branches: [ "master", "main" ]
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-pack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Navidrome Binary
+        run: |
+          mkdir -p build_pkg/app
+          TAG=$(curl -s https://api.github.com/repos/navidrome/navidrome/releases/latest | jq -r .tag_name)
+          echo "Target tag: $TAG"
+          curl -sL "https://github.com/navidrome/navidrome/releases/download/${TAG}/navidrome_${TAG#v}_linux_amd64.tar.gz" -o navidrome.tar.gz
+          tar -zxvf navidrome.tar.gz -C build_pkg/app/ navidrome
+          chmod +x build_pkg/app/navidrome
+
+      - name: Assemble FPK Directory
+        run: |
+          cp -r .fnos/* build_pkg/
+          chmod +x build_pkg/service/start
+          chmod +x build_pkg/service/stop
+
+      - name: Create FPK Archive
+        run: |
+          cd build_pkg
+          tar -zcvf ../navidrome-x86_64.fpk *
+          cd ..
+
+      - name: Upload FPK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: navidrome-fnos-fpk
+          path: navidrome-x86_64.fpk
