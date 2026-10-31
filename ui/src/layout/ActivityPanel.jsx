@@ -74,14 +74,14 @@ const Uptime = () => {
 
 const ActivityPanel = () => {
   const serverStart = useSelector((state) => state.activity.serverStart)
-  const up = serverStart.startTime
+  const up = Boolean(serverStart.startTime)
   const scanStatus = useSelector((state) => state.activity.scanStatus)
   const elapsed = useScanElapsedTime(
     scanStatus.scanning,
     scanStatus.elapsedTime,
   )
-  // Determine icon state: error (server down), warning (scan error), or normal
-  const serverDown = !up
+  // Only mark as down if startTime is explicitly set to null (server down event)
+  const serverDown = serverStart.startTime === null
   const hasWarning = Boolean(scanStatus.error)
   const classes = useStyles({ serverDown, hasWarning })
   const translate = useTranslate()

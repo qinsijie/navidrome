@@ -9,6 +9,7 @@ import {
   Tooltip,
   Divider,
   ButtonBase,
+  useTheme,
 } from '@material-ui/core'
 import { makeStyles } from '@material-ui/core/styles'
 import {
@@ -27,28 +28,46 @@ const useStyles = makeStyles((theme) => ({
     display: 'inline-flex',
     alignItems: 'center',
     gap: 6,
-    padding: '3px 8px',
+    padding: '3px 10px',
     borderRadius: 14,
-    border: `1px solid ${theme.palette.divider}`,
-    backgroundColor: theme.palette.action.hover,
-    color: theme.palette.text.primary,
-    fontSize: '0.78rem',
-    fontWeight: 500,
+    border: (props) =>
+      props.isDark
+        ? '1px solid rgba(255, 255, 255, 0.28) !important'
+        : '1px solid rgba(0, 0, 0, 0.25) !important',
+    backgroundColor: (props) =>
+      props.isDark
+        ? 'rgba(255, 255, 255, 0.12) !important'
+        : 'rgba(0, 0, 0, 0.08) !important',
+    color: (props) => (props.isDark ? '#ffffff !important' : '#1e293b !important'),
+    fontSize: '0.8rem',
+    fontWeight: 600,
     cursor: 'pointer',
-    maxWidth: 160,
+    maxWidth: 170,
     whiteSpace: 'nowrap',
     transition: 'all 0.2s ease',
     '&:hover': {
-      backgroundColor: theme.palette.action.selected,
-      borderColor: theme.palette.primary.main,
+      backgroundColor: (props) =>
+        props.isDark
+          ? 'rgba(255, 255, 255, 0.22) !important'
+          : 'rgba(0, 0, 0, 0.15) !important',
+      borderColor: `${theme.palette.primary.main} !important`,
+    },
+    '& svg': {
+      color: (props) =>
+        props.isDark ? '#90caf9 !important' : '#1976d2 !important',
+      fill: (props) =>
+        props.isDark ? '#90caf9 !important' : '#1976d2 !important',
+      flexShrink: 0,
     },
   },
   badgeText: {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
-    maxWidth: 100,
-    fontSize: '0.78rem',
+    maxWidth: 110,
+    fontSize: '0.8rem',
+    fontWeight: 600,
+    color: (props) => (props.isDark ? '#ffffff !important' : '#1e293b !important'),
   },
   menuHeader: {
     padding: '8px 16px',
@@ -58,7 +77,7 @@ const useStyles = makeStyles((theme) => ({
     borderBottom: `1px solid ${theme.palette.divider}`,
   },
   deviceItem: {
-    minWidth: 260,
+    minWidth: 280,
     padding: '8px 16px',
   },
   activeText: {
@@ -68,6 +87,13 @@ const useStyles = makeStyles((theme) => ({
   descText: {
     fontSize: '0.75rem',
     color: theme.palette.text.secondary,
+    display: 'block',
+  },
+  nowPlayingText: {
+    fontSize: '0.75rem',
+    color: '#31c27c',
+    fontWeight: 500,
+    display: 'block',
   },
   footerItem: {
     padding: '10px 16px',
@@ -85,18 +111,27 @@ const useStyles = makeStyles((theme) => ({
 }))
 
 const OutputDeviceSelector = ({ isDesktop, className }) => {
-  const classes = useStyles()
+  const theme = useTheme()
+  const isDark = theme.palette.type === 'dark'
+  const classes = useStyles({ isDark })
   const notify = useNotify()
   const [anchorEl, setAnchorEl] = useState(null)
   const [devices, setDevices] = useState([])
-  const [activeId, setActiveId] = useState('local')
+  const [activeId, setActiveId] = useState(() => localStorage.getItem('nd_active_output_device') || 'local')
+  const [nowPlaying, setNowPlaying] = useState(null)
 
   const loadDevices = useCallback(() => {
     httpClient('/api/output/devices?enabled_only=true')
       .then(({ json }) => {
         if (json) {
           if (json.devices) setDevices(json.devices)
-          if (json.activeId) setActiveId(json.activeId)
+          if (json.activeId) {
+            setActiveId(json.activeId)
+            localStorage.setItem('nd_active_output_device', json.activeId)
+          }
+          if (json.nowPlaying) {
+            setNowPlaying(json.nowPlaying)
+          }
         }
       })
       .catch(() => {})
@@ -122,6 +157,10 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
     })
       .then(() => {
         setActiveId(dev.id)
+        localStorage.setItem('nd_active_output_device', dev.id)
+        window.dispatchEvent(
+          new CustomEvent('nd:output-device-changed', { detail: { deviceId: dev.id, device: dev } }),
+        )
         notify(`音频输出已切换至: ${dev.name}`, 'info')
         handleClose()
       })
@@ -132,7 +171,7 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
 
   const activeDevice = devices.find((d) => d.id === activeId) || {
     id: 'local',
-    name: '本机',
+    name: '本机播放',
     type: 'local',
   }
 
@@ -151,7 +190,7 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
           data-testid="output-device-selector"
         >
           {getDeviceIcon(activeDevice)}
-          <span className={classes.badgeText}>{activeDevice.name}</span>
+          <span className={classes.badgeText}>{activeDevice.name || '本机播放'}</span>
         </ButtonBase>
       </Tooltip>
 
@@ -167,6 +206,12 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
         <div className={classes.menuHeader}>音频输出分区 (Audio Zones)</div>
         {devices.map((dev) => {
           const isActive = dev.id === activeId
+          const isDevPlaying =
+            isActive &&
+            nowPlaying &&
+            nowPlaying.deviceId === dev.id &&
+            nowPlaying.track &&
+            nowPlaying.track.title
           return (
             <MenuItem
               key={dev.id}
@@ -184,7 +229,13 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
                   </Typography>
                 }
                 secondary={
-                  <span className={classes.descText}>{dev.description}</span>
+                  isDevPlaying ? (
+                    <span className={classes.nowPlayingText}>
+                      ▶ 正在播放: {nowPlaying.track.title} - {nowPlaying.track.artist}
+                    </span>
+                  ) : (
+                    <span className={classes.descText}>{dev.description}</span>
+                  )
                 }
               />
               {isActive && <MdCheck color="#31c27c" size={20} />}

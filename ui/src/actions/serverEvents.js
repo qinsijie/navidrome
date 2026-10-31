@@ -26,7 +26,7 @@ export const nowPlayingCountSync = (data) => ({
 
 export const serverDown = () => ({
   type: EVENT_SERVER_START,
-  data: {},
+  data: { startTime: null },
 })
 
 export const streamReconnected = () => ({

@@ -17,6 +17,12 @@ let reconnectTimer
 const RECONNECT_DELAY = 5000
 
 const setupHandlers = (stream, dispatchFn) => {
+  stream.onopen = () => {
+    // eslint-disable-next-line no-console
+    console.log('EventStream connected')
+    dispatchFn(streamReconnected())
+  }
+
   stream.addEventListener('serverStart', eventHandler(dispatchFn))
   stream.addEventListener('scanStatus', throttledEventHandler(dispatchFn))
   stream.addEventListener('refreshResource', eventHandler(dispatchFn))
@@ -101,11 +107,34 @@ const startEventStreamNew = async (dispatchFn) => {
   return connect(dispatchFn)
 }
 
+let recoveryListenersSetup = false
+const setupRecoveryListeners = (dispatchFn) => {
+  if (recoveryListenersSetup || typeof document === 'undefined') return
+  recoveryListenersSetup = true
+
+  const handleWakeup = () => {
+    if (
+      document.visibilityState === 'visible' &&
+      localStorage.getItem('is-authenticated')
+    ) {
+      if (!eventStream || eventStream.readyState === 2 /* CLOSED */) {
+        // eslint-disable-next-line no-console
+        console.log('App resumed: reconnecting EventStream')
+        startEventStreamNew(dispatchFn)
+      }
+    }
+  }
+
+  document.addEventListener('visibilitychange', handleWakeup)
+  window.addEventListener('online', handleWakeup)
+}
+
 const startEventStream = async (dispatchFn) => {
   if (!localStorage.getItem('is-authenticated')) {
     return Promise.resolve()
   }
-  if (config.devNewEventStream) {
+  setupRecoveryListeners(dispatchFn)
+  if (config.devNewEventStream !== false) {
     return startEventStreamNew(dispatchFn)
   }
   return startEventStreamLegacy(dispatchFn)

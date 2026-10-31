@@ -16,40 +16,19 @@ import (
 	"github.com/navidrome/navidrome/log"
 )
 
-const ssdpMulticastAddr = "239.255.255.250:1900"
-
-var ssdpQueries = []string{
-	"M-SEARCH * HTTP/1.1\r\n" +
-		"HOST: 239.255.255.250:1900\r\n" +
-		"MAN: \"ssdp:discover\"\r\n" +
-		"MX: 3\r\n" +
-		"ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n",
-	"M-SEARCH * HTTP/1.1\r\n" +
-		"HOST: 239.255.255.250:1900\r\n" +
-		"MAN: \"ssdp:discover\"\r\n" +
-		"MX: 3\r\n" +
-		"ST: urn:schemas-upnp-org:service:AVTransport:1\r\n\r\n",
-	"M-SEARCH * HTTP/1.1\r\n" +
-		"HOST: 239.255.255.250:1900\r\n" +
-		"MAN: \"ssdp:discover\"\r\n" +
-		"MX: 3\r\n" +
-		"ST: ssdp:all\r\n\r\n",
-}
-
-// DLNADevice represents a discovered or manually added DLNA MediaRenderer
 type DLNADevice struct {
-	UDN        string    `json:"udn"`
-	Name       string    `json:"name"`
-	Location   string    `json:"location"`
-	ControlURL string    `json:"controlUrl"`
-	Enabled    bool      `json:"enabled"`
-	LastSeen   time.Time `json:"lastSeen"`
+	UDN                 string    `json:"udn"`
+	Name                string    `json:"name"`
+	Location            string    `json:"location"`
+	ControlURL          string    `json:"controlUrl"`
+	RenderingControlURL string    `json:"renderingControlUrl,omitempty"`
+	Enabled             bool      `json:"enabled"`
+	LastSeen            time.Time `json:"lastSeen"`
 }
 
-// DLNAScanner performs SSDP multicast discovery for DLNA DMR devices
 type DLNAScanner struct {
-	mu      sync.RWMutex
 	devices map[string]*DLNADevice
+	mu      sync.RWMutex
 	client  *http.Client
 }
 
@@ -60,33 +39,46 @@ func NewDLNAScanner() *DLNAScanner {
 	}
 }
 
-// Discover sends SSDP M-SEARCH broadcasts across multicast and collects responses
+// Discover sends SSDP M-SEARCH broadcast queries for MediaRenderer / AVTransport
 func (s *DLNAScanner) Discover(ctx context.Context, timeout time.Duration) ([]DLNADevice, error) {
-	addr, err := net.ResolveUDPAddr("udp4", ssdpMulticastAddr)
+	ssdpAddr, err := net.ResolveUDPAddr("udp4", "239.255.255.250:1900")
 	if err != nil {
-		return nil, fmt.Errorf("resolve multicast addr: %w", err)
+		return nil, err
 	}
 
 	conn, err := net.ListenUDP("udp4", nil)
 	if err != nil {
-		return nil, fmt.Errorf("listen udp: %w", err)
+		return nil, err
 	}
 	defer conn.Close()
 
-	for _, msg := range ssdpQueries {
-		_, _ = conn.WriteTo([]byte(msg), addr)
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+
+	searchTargets := []string{
+		"urn:schemas-upnp-org:device:MediaRenderer:1",
+		"urn:schemas-upnp-org:service:AVTransport:1",
+		"ssdp:all",
 	}
 
-	deadline := time.Now().Add(timeout)
-	_ = conn.SetReadDeadline(deadline)
+	for _, st := range searchTargets {
+		msg := fmt.Sprintf("M-SEARCH * HTTP/1.1\r\n"+
+			"HOST: 239.255.255.250:1900\r\n"+
+			"MAN: \"ssdp:discover\"\r\n"+
+			"MX: 2\r\n"+
+			"ST: %s\r\n\r\n", st)
+		_, _ = conn.WriteTo([]byte(msg), ssdpAddr)
+	}
 
-	buf := make([]byte, 4096)
+	buf := make([]byte, 2048)
 	locations := make(map[string]bool)
 
 	for {
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			break
+		default:
 		}
+
 		n, _, err := conn.ReadFrom(buf)
 		if err != nil {
 			break // timeout or closed
@@ -120,7 +112,6 @@ func (s *DLNAScanner) FetchDeviceFromURL(ctx context.Context, loc string, custom
 		loc = "http://" + loc
 	}
 
-	// Try fetching desc XML
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)
 	if err != nil {
 		return nil, err
@@ -142,10 +133,12 @@ func (s *DLNAScanner) FetchDeviceFromURL(ctx context.Context, loc string, custom
 	}
 
 	var avTransportControlURL string
+	var renderingControlURL string
 	for _, svc := range root.Device.ServiceList.Services {
 		if strings.Contains(svc.ServiceType, "AVTransport") {
 			avTransportControlURL = svc.ControlURL
-			break
+		} else if strings.Contains(svc.ServiceType, "RenderingControl") {
+			renderingControlURL = svc.ControlURL
 		}
 	}
 
@@ -155,9 +148,13 @@ func (s *DLNAScanner) FetchDeviceFromURL(ctx context.Context, loc string, custom
 
 	baseURL, err := url.Parse(loc)
 	if err == nil {
-		ctrlURL, err := url.Parse(avTransportControlURL)
-		if err == nil {
+		if ctrlURL, err := url.Parse(avTransportControlURL); err == nil {
 			avTransportControlURL = baseURL.ResolveReference(ctrlURL).String()
+		}
+		if renderingControlURL != "" {
+			if rCtrlURL, err := url.Parse(renderingControlURL); err == nil {
+				renderingControlURL = baseURL.ResolveReference(rCtrlURL).String()
+			}
 		}
 	}
 
@@ -171,12 +168,13 @@ func (s *DLNAScanner) FetchDeviceFromURL(ctx context.Context, loc string, custom
 	}
 
 	dev := &DLNADevice{
-		UDN:        udn,
-		Name:       name,
-		Location:   loc,
-		ControlURL: avTransportControlURL,
-		Enabled:    true,
-		LastSeen:   time.Now(),
+		UDN:                 udn,
+		Name:                name,
+		Location:            loc,
+		ControlURL:          avTransportControlURL,
+		RenderingControlURL: renderingControlURL,
+		Enabled:             true,
+		LastSeen:            time.Now(),
 	}
 
 	s.mu.Lock()
@@ -209,10 +207,14 @@ type serviceXML struct {
 }
 
 func (s *DLNAScanner) fetchDeviceDesc(location string) {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, location, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, location, nil)
 	if err != nil {
 		return
 	}
+
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return
@@ -230,10 +232,12 @@ func (s *DLNAScanner) fetchDeviceDesc(location string) {
 	}
 
 	var avTransportControlURL string
+	var renderingControlURL string
 	for _, svc := range root.Device.ServiceList.Services {
 		if strings.Contains(svc.ServiceType, "AVTransport") {
 			avTransportControlURL = svc.ControlURL
-			break
+		} else if strings.Contains(svc.ServiceType, "RenderingControl") {
+			renderingControlURL = svc.ControlURL
 		}
 	}
 
@@ -243,9 +247,13 @@ func (s *DLNAScanner) fetchDeviceDesc(location string) {
 
 	baseURL, err := url.Parse(location)
 	if err == nil {
-		ctrlURL, err := url.Parse(avTransportControlURL)
-		if err == nil {
+		if ctrlURL, err := url.Parse(avTransportControlURL); err == nil {
 			avTransportControlURL = baseURL.ResolveReference(ctrlURL).String()
+		}
+		if renderingControlURL != "" {
+			if rCtrlURL, err := url.Parse(renderingControlURL); err == nil {
+				renderingControlURL = baseURL.ResolveReference(rCtrlURL).String()
+			}
 		}
 	}
 
@@ -263,25 +271,26 @@ func (s *DLNAScanner) fetchDeviceDesc(location string) {
 	}
 
 	s.devices[udn] = &DLNADevice{
-		UDN:        udn,
-		Name:       root.Device.FriendlyName,
-		Location:   location,
-		ControlURL: avTransportControlURL,
-		Enabled:    enabled,
-		LastSeen:   time.Now(),
+		UDN:                 udn,
+		Name:                root.Device.FriendlyName,
+		Location:            location,
+		ControlURL:          avTransportControlURL,
+		RenderingControlURL: renderingControlURL,
+		Enabled:             enabled,
+		LastSeen:            time.Now(),
 	}
 	log.Info("Discovered DLNA DMR: " + root.Device.FriendlyName + " (" + avTransportControlURL + ")")
 }
 
-func sendSOAP(ctx context.Context, client *http.Client, controlURL, action, body string) error {
+func sendSOAP(ctx context.Context, client *http.Client, controlURL, service, action, body string) error {
 	soapBody := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Body>
-    <u:%s xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+    <u:%s xmlns:u="urn:schemas-upnp-org:service:%s">
       %s
     </u:%s>
   </s:Body>
-</s:Envelope>`, action, body, action)
+</s:Envelope>`, action, service, body, action)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlURL, bytes.NewBufferString(soapBody))
 	if err != nil {
@@ -289,7 +298,7 @@ func sendSOAP(ctx context.Context, client *http.Client, controlURL, action, body
 	}
 
 	req.Header.Set("Content-Type", `text/xml; charset="utf-8"`)
-	req.Header.Set("SOAPAction", `"urn:schemas-upnp-org:service:AVTransport:1#`+action+`"`)
+	req.Header.Set("SOAPAction", fmt.Sprintf(`"urn:schemas-upnp-org:service:%s#%s"`, service, action))
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -311,22 +320,42 @@ func SetAVTransportURI(ctx context.Context, client *http.Client, controlURL, str
 	body := fmt.Sprintf(`<InstanceID>0</InstanceID><CurrentURI>%s</CurrentURI><CurrentURIMetaData>%s</CurrentURIMetaData>`,
 		escapeXML(streamURI), didlLite)
 
-	return sendSOAP(ctx, client, controlURL, "SetAVTransportURI", body)
+	return sendSOAP(ctx, client, controlURL, "AVTransport:1", "SetAVTransportURI", body)
 }
 
 func Play(ctx context.Context, client *http.Client, controlURL string) error {
 	body := `<InstanceID>0</InstanceID><Speed>1</Speed>`
-	return sendSOAP(ctx, client, controlURL, "Play", body)
+	return sendSOAP(ctx, client, controlURL, "AVTransport:1", "Play", body)
 }
 
 func Pause(ctx context.Context, client *http.Client, controlURL string) error {
 	body := `<InstanceID>0</InstanceID>`
-	return sendSOAP(ctx, client, controlURL, "Pause", body)
+	return sendSOAP(ctx, client, controlURL, "AVTransport:1", "Pause", body)
 }
 
 func Stop(ctx context.Context, client *http.Client, controlURL string) error {
 	body := `<InstanceID>0</InstanceID>`
-	return sendSOAP(ctx, client, controlURL, "Stop", body)
+	return sendSOAP(ctx, client, controlURL, "AVTransport:1", "Stop", body)
+}
+
+func Seek(ctx context.Context, client *http.Client, controlURL string, seconds float64) error {
+	hours := int(seconds) / 3600
+	mins := (int(seconds) % 3600) / 60
+	secs := int(seconds) % 60
+	target := fmt.Sprintf("%02d:%02d:%02d", hours, mins, secs)
+	body := fmt.Sprintf(`<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>%s</Target>`, target)
+	return sendSOAP(ctx, client, controlURL, "AVTransport:1", "Seek", body)
+}
+
+func SetVolume(ctx context.Context, client *http.Client, renderingControlURL string, volume int) error {
+	if volume < 0 {
+		volume = 0
+	}
+	if volume > 100 {
+		volume = 100
+	}
+	body := fmt.Sprintf(`<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>%d</DesiredVolume>`, volume)
+	return sendSOAP(ctx, client, renderingControlURL, "RenderingControl:1", "SetVolume", body)
 }
 
 func escapeXML(s string) string {

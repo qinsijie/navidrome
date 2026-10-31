@@ -27,16 +27,26 @@ type StoredState struct {
 	ActiveDeviceID string                `json:"activeDeviceId"`
 }
 
+type NowPlayingInfo struct {
+	DeviceID   string        `json:"deviceId"`
+	Track      TrackMetadata `json:"track"`
+	State      string        `json:"state"` // playing, paused, stopped
+	TimeOffset float64       `json:"timeOffset"`
+}
+
 type Manager struct {
-	mu           sync.RWMutex
-	localName    string
-	localEnabled bool
-	activeDevID  string
-	dlnaScanner  *DLNAScanner
-	hqClient     *HQPlayerClient
-	hqConfig     HQPlayerConfig
-	httpClient   *http.Client
-	lastScan     time.Time
+	mu                sync.RWMutex
+	localName         string
+	localEnabled      bool
+	activeDevID       string
+	dlnaScanner       *DLNAScanner
+	hqClient          *HQPlayerClient
+	hqConfig          HQPlayerConfig
+	httpClient        *http.Client
+	lastScan          time.Time
+	currentTrack      TrackMetadata
+	playbackState     string
+	currentTimeOffset float64
 }
 
 func GetManager() *Manager {
@@ -339,18 +349,32 @@ func (m *Manager) DeleteDLNA(deviceID string) {
 	m.saveState()
 }
 
-func (m *Manager) PlayStream(ctx context.Context, streamURL string, meta TrackMetadata) error {
+func (m *Manager) GetNowPlaying() NowPlayingInfo {
 	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return NowPlayingInfo{
+		DeviceID:   m.activeDevID,
+		Track:      m.currentTrack,
+		State:      m.playbackState,
+		TimeOffset: m.currentTimeOffset,
+	}
+}
+
+func (m *Manager) PlayStream(ctx context.Context, streamURL string, meta TrackMetadata, timeOffset float64) error {
+	m.mu.Lock()
+	m.currentTrack = meta
+	m.playbackState = "playing"
+	m.currentTimeOffset = timeOffset
 	activeID := m.activeDevID
 	hqCfg := m.hqConfig
-	m.mu.RUnlock()
+	m.mu.Unlock()
 
 	if activeID == "" || activeID == string(DeviceTypeLocal) {
 		return nil
 	}
 
 	if activeID == "hqplayer" {
-		return m.hqClient.PlayRawStream(ctx, hqCfg, streamURL, meta)
+		return m.hqClient.PlayRawStream(ctx, hqCfg, streamURL, meta, timeOffset)
 	}
 
 	m.dlnaScanner.mu.RLock()
@@ -364,16 +388,33 @@ func (m *Manager) PlayStream(ctx context.Context, streamURL string, meta TrackMe
 	if err := SetAVTransportURI(ctx, m.httpClient, dev.ControlURL, streamURL, meta.Title, meta.Artist); err != nil {
 		return fmt.Errorf("set av transport uri: %w", err)
 	}
-	return Play(ctx, m.httpClient, dev.ControlURL)
+	if err := Play(ctx, m.httpClient, dev.ControlURL); err != nil {
+		return err
+	}
+	if timeOffset > 0 {
+		_ = Seek(ctx, m.httpClient, dev.ControlURL, timeOffset)
+	}
+	return nil
 }
 
-func (m *Manager) ControlPlayback(ctx context.Context, action string) error {
-	m.mu.RLock()
+func (m *Manager) ControlPlayback(ctx context.Context, action string, timeOffset float64, volume int) error {
+	m.mu.Lock()
+	if action == "play" || action == "pause" || action == "stop" {
+		m.playbackState = action
+	}
+	if action == "seek" {
+		m.currentTimeOffset = timeOffset
+	}
 	activeID := m.activeDevID
-	m.mu.RUnlock()
+	hqCfg := m.hqConfig
+	m.mu.Unlock()
 
-	if activeID == "" || activeID == string(DeviceTypeLocal) || activeID == "hqplayer" {
+	if activeID == "" || activeID == string(DeviceTypeLocal) {
 		return nil
+	}
+
+	if activeID == "hqplayer" {
+		return m.hqClient.Control(ctx, hqCfg, action, timeOffset, volume)
 	}
 
 	m.dlnaScanner.mu.RLock()
@@ -391,6 +432,14 @@ func (m *Manager) ControlPlayback(ctx context.Context, action string) error {
 		return Pause(ctx, m.httpClient, dev.ControlURL)
 	case "stop":
 		return Stop(ctx, m.httpClient, dev.ControlURL)
+	case "seek":
+		return Seek(ctx, m.httpClient, dev.ControlURL, timeOffset)
+	case "volume":
+		ctrl := dev.RenderingControlURL
+		if ctrl == "" {
+			ctrl = dev.ControlURL
+		}
+		return SetVolume(ctx, m.httpClient, ctrl, volume)
 	}
 	return nil
 }

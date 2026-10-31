@@ -2,7 +2,9 @@ package nativeapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/navidrome/navidrome/core/output"
@@ -30,15 +32,35 @@ type addDLNARequest struct {
 }
 
 type playbackControlRequest struct {
-	Action string `json:"action"` // play, pause, stop
+	Action     string  `json:"action"` // play, pause, stop, seek, volume
+	TimeOffset float64 `json:"timeOffset,omitempty"`
+	Volume     int     `json:"volume,omitempty"` // 0-100
 }
 
 type playStreamRequest struct {
-	TrackID   string `json:"trackId"`
-	Title     string `json:"title"`
-	Artist    string `json:"artist"`
-	Album     string `json:"album"`
-	StreamURL string `json:"streamUrl"`
+	TrackID    string  `json:"trackId"`
+	Title      string  `json:"title"`
+	Artist     string  `json:"artist"`
+	Album      string  `json:"album"`
+	StreamURL  string  `json:"streamUrl"`
+	TimeOffset float64 `json:"timeOffset,omitempty"`
+}
+
+func resolveOutboundURL(r *http.Request, rawURL string) string {
+	if strings.HasPrefix(rawURL, "/") {
+		scheme := "http"
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			scheme = "https"
+		}
+		rawURL = fmt.Sprintf("%s://%s%s", scheme, r.Host, rawURL)
+	}
+
+	host := r.Host
+	if host != "" && !strings.HasPrefix(host, "localhost") && !strings.HasPrefix(host, "127.0.0.1") {
+		rawURL = strings.Replace(rawURL, "localhost:4533", host, 1)
+		rawURL = strings.Replace(rawURL, "127.0.0.1:4533", host, 1)
+	}
+	return rawURL
 }
 
 func (api *Router) addOutputRoutes(r chi.Router) {
@@ -49,9 +71,10 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		devices := mgr.GetDevices(r.Context(), onlyEnabled)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"devices":  devices,
-			"activeId": mgr.GetActiveDevice(),
-			"hqConfig": mgr.GetHQPlayerConfig(),
+			"devices":    devices,
+			"activeId":   mgr.GetActiveDevice(),
+			"hqConfig":   mgr.GetHQPlayerConfig(),
+			"nowPlaying": mgr.GetNowPlaying(),
 		})
 	})
 
@@ -159,14 +182,16 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+
+		resolvedURL := resolveOutboundURL(r, req.StreamURL)
 		meta := output.TrackMetadata{
 			TrackID: req.TrackID,
 			Title:   req.Title,
 			Artist:  req.Artist,
 			Album:   req.Album,
-			Stream:  req.StreamURL,
+			Stream:  resolvedURL,
 		}
-		if err := mgr.PlayStream(r.Context(), req.StreamURL, meta); err != nil {
+		if err := mgr.PlayStream(r.Context(), resolvedURL, meta, req.TimeOffset); err != nil {
 			log.Error(r.Context(), "Failed to play stream on output device", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -182,13 +207,48 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		if err := mgr.ControlPlayback(r.Context(), req.Action); err != nil {
+		if err := mgr.ControlPlayback(r.Context(), req.Action, req.TimeOffset, req.Volume); err != nil {
 			log.Error(r.Context(), "Failed to control output device", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	r.Post("/output/pause", func(w http.ResponseWriter, r *http.Request) {
+		if err := mgr.ControlPlayback(r.Context(), "pause", 0, 0); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	r.Post("/output/seek", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			TimeOffset float64 `json:"timeOffset"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := mgr.ControlPlayback(r.Context(), "seek", req.TimeOffset, 0); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	r.Post("/output/volume", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Volume int `json:"volume"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := mgr.ControlPlayback(r.Context(), "volume", 0, req.Volume); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 }

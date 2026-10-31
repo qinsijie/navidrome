@@ -34,6 +34,7 @@ import { keyMap } from '../hotkeys'
 import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
+import { httpClient } from '../dataProvider'
 
 const Player = () => {
   const theme = useCurrentTheme()
@@ -125,7 +126,77 @@ const Player = () => {
     }
   }, [playerState.queue, playerState.savedPlayIndex])
 
-  const visible = authenticated && playerState.queue.length > 0
+  const [activeOutputDevice, setActiveOutputDevice] = useState(
+    () => localStorage.getItem('nd_active_output_device') || 'local',
+  )
+  const activeOutputDeviceRef = useRef(activeOutputDevice)
+  activeOutputDeviceRef.current = activeOutputDevice
+
+  useEffect(() => {
+    httpClient('/api/output/devices?enabled_only=true')
+      .then(({ json }) => {
+        if (json?.activeId) {
+          setActiveOutputDevice(json.activeId)
+          localStorage.setItem('nd_active_output_device', json.activeId)
+        }
+      })
+      .catch(() => {})
+
+    const handleDeviceChanged = (e) => {
+      const newId = e.detail?.deviceId || 'local'
+      setActiveOutputDevice(newId)
+    }
+    window.addEventListener('nd:output-device-changed', handleDeviceChanged)
+    return () => {
+      window.removeEventListener('nd:output-device-changed', handleDeviceChanged)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (audioInstance) {
+      audioInstance.muted = activeOutputDevice !== 'local'
+    }
+  }, [audioInstance, activeOutputDevice])
+
+  useEffect(() => {
+    if (activeOutputDevice !== 'local') {
+      if (audioInstance && !audioInstance.paused && currentTrackIdRef.current) {
+        const current = playerStateRef.current?.current || {}
+        if (current.musicSrc) {
+          httpClient('/api/output/play', {
+            method: 'POST',
+            body: JSON.stringify({
+              trackId: current.trackId,
+              title: current.song?.title || current.name || '',
+              artist: current.song?.artist || current.singer || '',
+              album: current.song?.album || '',
+              streamUrl: current.musicSrc,
+              timeOffset: audioInstance.currentTime || 0,
+            }),
+          }).catch(() => {})
+        }
+      }
+    } else {
+      httpClient('/api/output/control', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'stop' }),
+      }).catch(() => {})
+    }
+  }, [activeOutputDevice, audioInstance])
+
+  const visible = authenticated
+  const placeholderTracks = useMemo(
+    () => [
+      {
+        name: 'Navidrome 就绪',
+        singer: '等待播放曲目',
+        cover: '/app-icon.png',
+        musicSrc: '',
+        isPlaceholder: true,
+      },
+    ],
+    [],
+  )
   const isRadio = playerState.current?.isRadio || false
   const classes = useStyle({
     isRadio,
@@ -244,12 +315,13 @@ const Player = () => {
 
   const options = useMemo(() => {
     const current = playerState.current || {}
+    const hasQueue = playerState.queue.length > 0
     return {
       ...defaultOptions,
-      audioLists: playerState.queue.map((item) => item),
-      playIndex: playerState.playIndex,
+      audioLists: hasQueue ? playerState.queue.map((item) => item) : placeholderTracks,
+      playIndex: hasQueue ? playerState.playIndex : 0,
       autoPlay:
-        playerState.queue.length > 0 &&
+        hasQueue &&
         playerState.autoPlay !== false &&
         (playerState.clear || playerState.playIndex === 0),
       clearPriorAudioLists: playerState.clear,
@@ -257,9 +329,9 @@ const Player = () => {
         <PlayerToolbar id={current.trackId} isRadio={current.isRadio} />
       ),
       defaultVolume: isMobilePlayer ? 1 : playerState.volume,
-      showMediaSession: !current.isRadio,
+      showMediaSession: !current.isRadio && hasQueue,
     }
-  }, [playerState, defaultOptions, isMobilePlayer])
+  }, [playerState, defaultOptions, isMobilePlayer, placeholderTracks])
 
   const onAudioListsChange = useCallback(
     (_, audioLists, audioInfo) => dispatch(syncQueue(audioInfo, audioLists)),
@@ -277,7 +349,18 @@ const Player = () => {
 
   const onAudioVolumeChange = useCallback(
     // sqrt to compensate for the logarithmic volume
-    (volume) => dispatch(setVolume(Math.sqrt(volume))),
+    (volume) => {
+      dispatch(setVolume(Math.sqrt(volume)))
+      if (activeOutputDeviceRef.current !== 'local') {
+        httpClient('/api/output/control', {
+          method: 'POST',
+          body: JSON.stringify({
+            action: 'volume',
+            volume: Math.round(volume * 100),
+          }),
+        }).catch(() => {})
+      }
+    },
     [dispatch],
   )
 
@@ -288,6 +371,23 @@ const Player = () => {
       }
 
       dispatch(currentPlaying(info))
+      if (info.isPlaceholder) return
+
+      // Real remote streaming dispatch
+      if (activeOutputDeviceRef.current !== 'local' && info.musicSrc) {
+        httpClient('/api/output/play', {
+          method: 'POST',
+          body: JSON.stringify({
+            trackId: info.trackId,
+            title: info.song?.title || info.name || '',
+            artist: info.song?.artist || info.singer || '',
+            album: info.song?.album || '',
+            streamUrl: info.musicSrc,
+            timeOffset: info.currentTime || 0,
+          }),
+        }).catch(() => {})
+      }
+
       if (info.duration) {
         const song = info.song
         document.title = `${song.title} - ${song.artist} - Navidrome`
@@ -341,6 +441,12 @@ const Player = () => {
   const onAudioPause = useCallback(
     (info) => {
       dispatch(currentPlaying(info))
+      if (activeOutputDeviceRef.current !== 'local' && !info.isPlaceholder) {
+        httpClient('/api/output/control', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'pause' }),
+        }).catch(() => {})
+      }
       if (!info.isRadio && currentTrackId) {
         const posMs = Math.floor(info.currentTime * 1000)
         lastPositionMsRef.current = posMs
@@ -353,6 +459,7 @@ const Player = () => {
 
   const onAudioEnded = useCallback(
     (currentPlayId, audioLists, info) => {
+      if (info.isPlaceholder) return
       if (currentTrackId && !info.isRadio) {
         const posMs = Math.floor((info.duration || 0) * 1000)
         subsonic.reportPlayback(currentTrackId, posMs, 'stopped')
@@ -511,6 +618,15 @@ const Player = () => {
     const handleSeeked = () => {
       if (timer) clearTimeout(timer)
       timer = setTimeout(flush, 250)
+      if (activeOutputDeviceRef.current !== 'local' && audioInstance) {
+        httpClient('/api/output/control', {
+          method: 'POST',
+          body: JSON.stringify({
+            action: 'seek',
+            timeOffset: audioInstance.currentTime || 0,
+          }),
+        }).catch(() => {})
+      }
     }
     audioInstance.addEventListener('seeked', handleSeeked)
     return () => {

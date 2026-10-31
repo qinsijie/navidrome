@@ -24,7 +24,12 @@ const AudioTitle = React.memo(({ audioInfo, gainInfo, isMobile }) => {
   )
 
   if (!song) {
-    return ''
+    return (
+      <span className={classes.songInfo}>
+        <span className={classes.songTitle}>{audioInfo.name || 'Navidrome 就绪'}</span>
+        {audioInfo.singer && <span className={classes.songAlbum}> - {audioInfo.singer}</span>}
+      </span>
+    )
   }
 
   const qi = {
