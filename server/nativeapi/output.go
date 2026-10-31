@@ -169,6 +169,10 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			return
 		}
 
+		if req.TimeOffset < 1.0 {
+			req.TimeOffset = 0
+		}
+
 		resolvedURL := resolveOutboundURL(r, req.StreamURL, mgr.GetActiveTargetHost())
 		meta := output.TrackMetadata{
 			TrackID: req.TrackID,
@@ -192,6 +196,9 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
+		}
+		if req.Action == "seek" && req.TimeOffset < 1.0 {
+			req.TimeOffset = 0
 		}
 		if err := mgr.ControlPlayback(r.Context(), req.Action, req.TimeOffset, req.Volume); err != nil {
 			log.Error(r.Context(), "Failed to control output device", err)
@@ -217,6 +224,9 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			TimeOffset float64 `json:"timeOffset"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.TimeOffset < 1.0 {
+			req.TimeOffset = 0
+		}
 		if err := mgr.ControlPlayback(r.Context(), "seek", req.TimeOffset, 0); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

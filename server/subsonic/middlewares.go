@@ -63,6 +63,22 @@ func fromInternalOrProxyAuth(r *http.Request) (string, bool) {
 
 func checkRequiredParameters(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Normalize query parameters from XML clients (such as HQPlayer) that do not unescape literal &amp; in URLs
+		q := r.URL.Query()
+		modified := false
+		for k, vs := range q {
+			if strings.HasPrefix(k, "amp;") {
+				cleanK := strings.TrimPrefix(k, "amp;")
+				if _, exists := q[cleanK]; !exists {
+					q[cleanK] = vs
+					modified = true
+				}
+			}
+		}
+		if modified {
+			r.URL.RawQuery = q.Encode()
+		}
+
 		var requiredParameters []string
 
 		p := req.Params(r)

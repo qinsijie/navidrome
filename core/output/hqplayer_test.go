@@ -109,21 +109,39 @@ func TestHQPlayerClient_PlayRawStreamAndControl(t *testing.T) {
 		t.Fatalf("PlayRawStream failed: %v", err)
 	}
 
-	if len(received) != 4 {
-		t.Fatalf("expected 4 XML commands, got %d: %v", len(received), received)
+	if len(received) != 5 {
+		t.Fatalf("expected 5 XML commands (<Stop>, <PlaylistClear>, <PlaylistAdd>, <Play>, <Seek>), got %d: %v", len(received), received)
 	}
-	if received[0] != "<PlaylistClear/>" {
+	if received[0] != "<Stop/>" {
 		t.Errorf("unexpected cmd[0]: %s", received[0])
 	}
+	if received[1] != "<PlaylistClear/>" {
+		t.Errorf("unexpected cmd[1]: %s", received[1])
+	}
 	expectedAdd := `<PlaylistAdd uri="http://10.10.10.101:4533/rest/stream?u=admin&amp;t=tok&amp;s=salt&amp;id=123&amp;format=raw"/>`
-	if received[1] != expectedAdd {
-		t.Errorf("expected %s, got %s", expectedAdd, received[1])
+	if received[2] != expectedAdd {
+		t.Errorf("expected %s, got %s", expectedAdd, received[2])
 	}
-	if received[2] != "<Play/>" {
-		t.Errorf("unexpected cmd[2]: %s", received[2])
-	}
-	if received[3] != `<Seek position="42"/>` {
+	if received[3] != "<Play/>" {
 		t.Errorf("unexpected cmd[3]: %s", received[3])
+	}
+	if received[4] != `<Seek position="42"/>` {
+		t.Errorf("unexpected cmd[4]: %s", received[4])
+	}
+
+	// Verify micro offset (< 1.0s) strictly suppresses <Seek> to avoid buffer underruns
+	received = nil
+	err = client.PlayRawStream(context.Background(), cfg, streamURL, TrackMetadata{Title: "Test"}, 0.4)
+	if err != nil {
+		t.Fatalf("PlayRawStream with micro offset failed: %v", err)
+	}
+	if len(received) != 4 {
+		t.Fatalf("expected 4 XML commands without Seek, got %d: %v", len(received), received)
+	}
+	for _, cmd := range received {
+		if strings.HasPrefix(cmd, "<Seek") {
+			t.Errorf("micro offset (<1.0s) should not trigger <Seek>, found %s", cmd)
+		}
 	}
 
 	// Verify Pause maps to <Stop/>

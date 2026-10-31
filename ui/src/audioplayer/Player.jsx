@@ -177,7 +177,7 @@ const Player = () => {
               artist: current.song?.artist || current.singer || '',
               album: current.song?.album || '',
               streamUrl: rawStreamUrl,
-              timeOffset: audioInstance.currentTime || 0,
+              timeOffset: (audioInstance.currentTime && audioInstance.currentTime >= 1.0) ? audioInstance.currentTime : 0,
             }),
           }).catch(() => {})
         }
@@ -396,7 +396,7 @@ const Player = () => {
               artist: info.song?.artist || info.singer || '',
               album: info.song?.album || '',
               streamUrl: rawStreamUrl,
-              timeOffset: info.currentTime || 0,
+              timeOffset: (info.currentTime && info.currentTime >= 1.0) ? info.currentTime : 0,
             }),
           }).catch(() => {})
         }
@@ -637,7 +637,7 @@ const Player = () => {
           method: 'POST',
           body: JSON.stringify({
             action: 'seek',
-            timeOffset: audioInstance.currentTime || 0,
+            timeOffset: (audioInstance.currentTime && audioInstance.currentTime >= 1.0) ? audioInstance.currentTime : 0,
           }),
         }).catch(() => {})
       }

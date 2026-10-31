@@ -435,8 +435,11 @@ func ResolveOutboundURL(r *http.Request, rawURL string, defaultPort int, targetH
 			q := u.Query()
 			if q.Get("format") == "" {
 				q.Set("format", "raw")
-				u.RawQuery = q.Encode()
 			}
+			if targetHost != "" {
+				q.Set("target", "hqplayer")
+			}
+			u.RawQuery = q.Encode()
 		}
 		rawURL = u.String()
 	}

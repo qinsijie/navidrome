@@ -130,22 +130,73 @@ func (c *HQPlayerClient) PlayRawStream(ctx context.Context, cfg HQPlayerConfig, 
 	escapedURI := escapeXML(streamURL)
 	log.Info(fmt.Sprintf("Sending raw audio stream to HQPlayer node (%s:%d): %s (offset: %.1fs)", cfg.Host, port, streamURL, timeOffset))
 
-	cmds := []string{
-		"<PlaylistClear/>",
-		fmt.Sprintf(`<PlaylistAdd uri="%s"/>`, escapedURI),
-		"<Play/>",
-	}
-	if timeOffset > 0 {
-		cmds = append(cmds, fmt.Sprintf(`<Seek position="%d"/>`, int(timeOffset)))
-	}
-
-	resps, err := c.SendHQPlayerXMLCommands(ctx, cfg, cmds...)
+	target := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", port))
+	d := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", target)
 	if err != nil {
-		log.Error(ctx, "HQPlayer XML playback failed", "host", cfg.Host, "port", port, "streamURL", streamURL, "responses", resps, err)
-		return err
+		return fmt.Errorf("hqplayer tcp dial %s: %w", target, err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	reader := bufio.NewReader(conn)
+
+	sendCmd := func(cmd string) (string, error) {
+		line := strings.TrimSpace(cmd) + "\n"
+		if _, err := conn.Write([]byte(line)); err != nil {
+			return "", fmt.Errorf("write %q: %w", cmd, err)
+		}
+		resp, err := reader.ReadString('\n')
+		if err != nil {
+			return "", fmt.Errorf("read response for %q: %w", cmd, err)
+		}
+		return strings.TrimSpace(resp), nil
 	}
 
-	log.Info(fmt.Sprintf("HQPlayer XML: successfully queued and started playback for %s (responses: %v)", streamURL, resps))
+	// 1. Cut off existing audio decoding pipeline with <Stop/> to allow clean track transition
+	stopResp, err := sendCmd("<Stop/>")
+	if err != nil {
+		log.Warn(ctx, "HQPlayer Stop warning", "resp", stopResp, err)
+	}
+
+	// 2. Clear previous playlist entries
+	clearResp, err := sendCmd("<PlaylistClear/>")
+	if err != nil || !strings.Contains(clearResp, `result="OK"`) {
+		log.Warn(ctx, "HQPlayer PlaylistClear warning", "resp", clearResp, err)
+	}
+
+	// 3. Queue new track with XML-safe URI
+	addResp, err := sendCmd(fmt.Sprintf(`<PlaylistAdd uri="%s"/>`, escapedURI))
+	if err != nil || !strings.Contains(addResp, `result="OK"`) {
+		return fmt.Errorf("hqplayer PlaylistAdd failed (%s): %w", addResp, err)
+	}
+
+	// 4. Transport mount delay: allow HQPE's HTTP reader to finish probing audio format headers (HEAD/Range)
+	time.Sleep(150 * time.Millisecond)
+
+	// 5. Trigger <Play/> with retry logic for transient "Empty transport"
+	var playResp string
+	for attempt := 0; attempt < 3; attempt++ {
+		playResp, err = sendCmd("<Play/>")
+		if err == nil && strings.Contains(playResp, `result="OK"`) {
+			break
+		}
+		if strings.Contains(playResp, "Empty transport") {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		return fmt.Errorf("hqplayer Play failed (%s): %w", playResp, err)
+	}
+
+	// 6. Apply Seek ONLY if timeOffset >= 1.0 (filter micro-offsets < 1.0s to avoid audio glitch / buffer flush)
+	if timeOffset >= 1.0 {
+		seekResp, err := sendCmd(fmt.Sprintf(`<Seek position="%d"/>`, int(timeOffset)))
+		if err != nil || !strings.Contains(seekResp, `result="OK"`) {
+			log.Warn(ctx, "HQPlayer Seek warning", "resp", seekResp, err)
+		}
+	}
+
+	log.Info(fmt.Sprintf("HQPlayer XML: successfully switched and playing %s (play resp: %s)", streamURL, playResp))
 	return nil
 }
 
@@ -160,6 +211,9 @@ func (c *HQPlayerClient) Control(ctx context.Context, cfg HQPlayerConfig, action
 		_, err := c.SendHQPlayerXMLCommands(ctx, cfg, "<Stop/>")
 		return err
 	case "seek":
+		if timeOffset < 1.0 {
+			timeOffset = 0
+		}
 		_, err := c.SendHQPlayerXMLCommands(ctx, cfg, fmt.Sprintf(`<Seek position="%d"/>`, int(timeOffset)))
 		return err
 	case "volume":

@@ -359,6 +359,7 @@ func SetVolume(ctx context.Context, client *http.Client, renderingControlURL str
 }
 
 func escapeXML(s string) string {
+	s = strings.ReplaceAll(s, "&amp;", "&")
 	var buf bytes.Buffer
 	_ = xml.EscapeText(&buf, []byte(s))
 	return buf.String()

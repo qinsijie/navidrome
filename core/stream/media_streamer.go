@@ -151,14 +151,16 @@ func (s *Stream) EstimatedContentLength() int {
 }
 
 // Serve writes the stream to the HTTP response. For seekable streams it uses http.ServeContent
-// (supporting range requests). For non-seekable streams it writes directly and logs any errors.
+// with burstResponseWriter (supporting range requests and 3MB initial burst buffer for HQPlayer/DLNA).
+// For non-seekable streams it writes directly and logs any errors.
 // Returns the number of bytes written and an error only when it fails with 0 bytes written
 // (meaning the HTTP 200 status has not been flushed yet and the caller can still send an error response).
 // Once bytes are on the wire it panics with http.ErrAbortHandler instead, aborting the response.
 // Empty output (0 bytes, no error) is logged but not treated as an error.
 func (s *Stream) Serve(ctx context.Context, w http.ResponseWriter, r *http.Request) (int64, error) {
 	if s.Seekable() {
-		http.ServeContent(w, r, s.Name(), s.ModTime(), s)
+		bw := newBurstResponseWriter(w)
+		http.ServeContent(bw, r, s.Name(), s.ModTime(), s)
 		return -1, nil
 	}
 
@@ -302,4 +304,82 @@ func limiterKey(ctx context.Context) string {
 		return user.UserName
 	}
 	return ""
+}
+
+// burstResponseWriter wraps http.ResponseWriter to provide burst buffering:
+// when serving raw audio files, it immediately bursts 3MB to prime the player's buffer (e.g. HQPlayer RingBuffer),
+// followed by sustained 128KB chunks with explicit flushes to prevent network stalls or buffer underruns.
+type burstResponseWriter struct {
+	http.ResponseWriter
+	flusher   http.Flusher
+	burstSize int
+	chunkSize int
+}
+
+func newBurstResponseWriter(w http.ResponseWriter) *burstResponseWriter {
+	flusher, _ := w.(http.Flusher)
+	return &burstResponseWriter{
+		ResponseWriter: w,
+		flusher:        flusher,
+		burstSize:      3 * 1024 * 1024, // 3MB initial burst
+		chunkSize:      128 * 1024,     // 128KB chunks for steady streaming
+	}
+}
+
+func (bw *burstResponseWriter) ReadFrom(r io.Reader) (int64, error) {
+	var totalWritten int64
+
+	// 1. Initial burst: immediately read and flush 2~4MB to prime player buffer
+	burstBuf := make([]byte, bw.burstSize)
+	n, err := io.ReadAtLeast(r, burstBuf, 1)
+	if n > 0 {
+		wn, werr := bw.ResponseWriter.Write(burstBuf[:n])
+		totalWritten += int64(wn)
+		if bw.flusher != nil {
+			bw.flusher.Flush()
+		}
+		if werr != nil {
+			return totalWritten, werr
+		}
+	}
+	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return totalWritten, nil
+		}
+		return totalWritten, err
+	}
+
+	// 2. High-speed raw streaming in 128KB chunks with flush
+	chunkBuf := make([]byte, bw.chunkSize)
+	for {
+		rn, rerr := r.Read(chunkBuf)
+		if rn > 0 {
+			wn, werr := bw.ResponseWriter.Write(chunkBuf[:rn])
+			totalWritten += int64(wn)
+			if bw.flusher != nil {
+				bw.flusher.Flush()
+			}
+			if werr != nil {
+				return totalWritten, werr
+			}
+		}
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				break
+			}
+			return totalWritten, rerr
+		}
+	}
+
+	return totalWritten, nil
+}
+
+func (bw *burstResponseWriter) Flush() {
+	if bw.flusher != nil {
+		bw.flusher.Flush()
+	}
+}
+
+func (bw *burstResponseWriter) Unwrap() http.ResponseWriter {
+	return bw.ResponseWriter
 }
