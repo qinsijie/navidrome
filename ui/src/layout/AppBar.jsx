@@ -1,4 +1,10 @@
-import React, { createElement, forwardRef, Fragment } from 'react'
+import React, {
+  createElement,
+  forwardRef,
+  Fragment,
+  useEffect,
+  useState,
+} from 'react'
 import {
   AppBar as RAAppBar,
   MenuItemLink,
@@ -6,6 +12,7 @@ import {
   usePermissions,
   getResources,
 } from 'react-admin'
+import { useHistory } from 'react-router-dom'
 import {
   MdInfo,
   MdPerson,
@@ -13,7 +20,16 @@ import {
   MdSupervisorAccount,
 } from 'react-icons/md'
 import { useSelector } from 'react-redux'
-import { makeStyles, MenuItem, ListItemIcon, Divider } from '@material-ui/core'
+import {
+  makeStyles,
+  MenuItem,
+  ListItemIcon,
+  Divider,
+  IconButton,
+  Tooltip,
+  Typography,
+} from '@material-ui/core'
+import ArrowBackIcon from '@material-ui/icons/ArrowBack'
 import ViewListIcon from '@material-ui/icons/ViewList'
 import { Dialogs } from '../dialogs/Dialogs'
 import { AboutDialog, QuickConnectDialog } from '../dialogs'
@@ -33,11 +49,76 @@ const useStyles = makeStyles(
       color: theme.palette.text.primary,
     },
     icon: { minWidth: theme.spacing(5) },
+    backButton: {
+      marginRight: theme.spacing(0.5),
+      color: 'inherit',
+      '@media (max-width: 768px)': {
+        display: 'none !important',
+      },
+    },
+    title: {
+      flex: 1,
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+      overflow: 'hidden',
+    },
   }),
   {
     name: 'NDAppBar',
   },
 )
+
+export const NavBackButton = () => {
+  const classes = useStyles()
+  const history = useHistory()
+  const [depth, setDepth] = useState(1)
+
+  useEffect(() => {
+    if (!history || typeof history.listen !== 'function') {
+      return undefined
+    }
+    const unlisten = history.listen((_location, action) => {
+      if (action === 'PUSH') {
+        setDepth((d) => d + 1)
+      } else if (action === 'POP') {
+        setDepth((d) => Math.max(1, d - 1))
+      }
+    })
+    return () => {
+      if (typeof unlisten === 'function') {
+        unlisten()
+      }
+    }
+  }, [history])
+
+  const canGoBack = depth > 1
+
+  const handleBack = () => {
+    if (!canGoBack) return
+    if (history && typeof history.goBack === 'function') {
+      history.goBack()
+    } else if (window.history) {
+      window.history.back()
+    }
+  }
+
+  return (
+    <Tooltip title="返回上一页 (Back)">
+      <span className={classes.backButton}>
+        <IconButton
+          color="inherit"
+          size="small"
+          disabled={!canGoBack}
+          onClick={handleBack}
+          aria-label="back"
+          data-testid="nav-back-button"
+        >
+          <ArrowBackIcon fontSize="small" />
+        </IconButton>
+      </span>
+    </Tooltip>
+  )
+}
 
 const DialogMenuItem = forwardRef(
   ({ onClick, label, icon, dialog, ...rest }, ref) => {
@@ -160,8 +241,19 @@ const CustomUserMenu = ({ onClick, ...rest }) => {
   )
 }
 
-const AppBar = (props) => (
-  <RAAppBar {...props} container={Fragment} userMenu={<CustomUserMenu />} />
-)
+const AppBar = (props) => {
+  const classes = useStyles(props)
+  return (
+    <RAAppBar {...props} container={Fragment} userMenu={<CustomUserMenu />}>
+      <NavBackButton />
+      <Typography
+        variant="h6"
+        color="inherit"
+        className={classes.title}
+        id="react-admin-title"
+      />
+    </RAAppBar>
+  )
+}
 
 export default AppBar

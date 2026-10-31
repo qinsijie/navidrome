@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,7 +64,7 @@ func GetManager() *Manager {
 			hqConfig: HQPlayerConfig{
 				Name:    "HQPlayer - 客厅",
 				Host:    "",
-				Port:    32400,
+				Port:    DefaultHQPlayerPort,
 				Enabled: false,
 			},
 		}
@@ -108,8 +111,8 @@ func (m *Manager) loadState() {
 	}
 	if state.HQConfig.Host != "" || state.HQConfig.Name != "" {
 		m.hqConfig = state.HQConfig
-		if m.hqConfig.Port <= 0 {
-			m.hqConfig.Port = 32400
+		if m.hqConfig.Port <= 0 || m.hqConfig.Port == 32400 {
+			m.hqConfig.Port = DefaultHQPlayerPort
 		}
 	}
 	for k, dev := range state.DLNADevices {
@@ -312,7 +315,7 @@ func (m *Manager) SetHQPlayerConfig(cfg HQPlayerConfig) error {
 	defer m.mu.Unlock()
 
 	if cfg.Port <= 0 {
-		cfg.Port = 32400
+		cfg.Port = DefaultHQPlayerPort
 	}
 	if cfg.Name == "" {
 		cfg.Name = "HQPlayer - 客厅"
@@ -327,6 +330,118 @@ func (m *Manager) GetHQPlayerConfig() HQPlayerConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.hqConfig
+}
+
+// GetActiveTargetHost returns the IP/Hostname of the currently active remote output device
+func (m *Manager) GetActiveTargetHost() string {
+	m.mu.RLock()
+	activeID := m.activeDevID
+	hqHost := strings.TrimSpace(m.hqConfig.Host)
+	m.mu.RUnlock()
+
+	if activeID == "hqplayer" && hqHost != "" {
+		return hqHost
+	}
+
+	m.dlnaScanner.mu.RLock()
+	dev, ok := m.dlnaScanner.devices[activeID]
+	m.dlnaScanner.mu.RUnlock()
+	if ok {
+		for _, raw := range []string{dev.ControlURL, dev.Location} {
+			if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
+				return u.Hostname()
+			}
+		}
+	}
+
+	return hqHost
+}
+
+// DetectOutboundIP queries the kernel routing table (via UDP dial without sending packets)
+// or enumerates physical interfaces to find the real LAN IP reachable by targetHost.
+func DetectOutboundIP(targetHost string) string {
+	candidates := []string{}
+	targetHost = strings.TrimSpace(targetHost)
+	if targetHost != "" && targetHost != "localhost" && targetHost != "127.0.0.1" {
+		candidates = append(candidates, targetHost)
+	}
+	candidates = append(candidates, "10.255.255.255", "192.168.255.255", "8.8.8.8")
+
+	for _, dst := range candidates {
+		conn, err := net.DialTimeout("udp", net.JoinHostPort(dst, "80"), 500*time.Millisecond)
+		if err == nil {
+			localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+			_ = conn.Close()
+			if ok && !localAddr.IP.IsLoopback() && localAddr.IP.To4() != nil {
+				return localAddr.IP.String()
+			}
+		}
+	}
+
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ip4 := ipnet.IP.To4(); ip4 != nil {
+					return ip4.String()
+				}
+			}
+		}
+	}
+	return "127.0.0.1"
+}
+
+func IsLoopbackHost(h string) bool {
+	h = strings.ToLower(strings.TrimSpace(h))
+	return h == "" || h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]"
+}
+
+// ResolveOutboundURL converts relative or loopback stream URLs into a full LAN-reachable raw stream URL
+func ResolveOutboundURL(r *http.Request, rawURL string, defaultPort int, targetHost string) string {
+	reqHost, reqPort, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		reqHost = r.Host
+		if defaultPort > 0 {
+			reqPort = fmt.Sprintf("%d", defaultPort)
+		} else {
+			reqPort = "4533"
+		}
+	}
+	if reqPort == "" || reqPort == "0" {
+		reqPort = "4533"
+	}
+
+	if IsLoopbackHost(reqHost) {
+		reqHost = DetectOutboundIP(targetHost)
+	}
+	outboundHostPort := net.JoinHostPort(reqHost, reqPort)
+
+	if strings.HasPrefix(rawURL, "/") {
+		scheme := "http"
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			scheme = "https"
+		}
+		rawURL = fmt.Sprintf("%s://%s%s", scheme, outboundHostPort, rawURL)
+	}
+
+	if u, err := url.Parse(rawURL); err == nil {
+		if IsLoopbackHost(u.Hostname()) {
+			uPort := u.Port()
+			if uPort == "" {
+				uPort = reqPort
+			}
+			u.Host = net.JoinHostPort(DetectOutboundIP(targetHost), uPort)
+		}
+		if strings.Contains(u.Path, "/rest/stream") {
+			q := u.Query()
+			if q.Get("format") == "" {
+				q.Set("format", "raw")
+				u.RawQuery = q.Encode()
+			}
+		}
+		rawURL = u.String()
+	}
+
+	return rawURL
 }
 
 func (m *Manager) TestHQPlayer(ctx context.Context, host string, port int) (bool, string) {
@@ -428,9 +543,8 @@ func (m *Manager) ControlPlayback(ctx context.Context, action string, timeOffset
 	switch action {
 	case "play":
 		return Play(ctx, m.httpClient, dev.ControlURL)
-	case "pause":
-		return Pause(ctx, m.httpClient, dev.ControlURL)
-	case "stop":
+	case "pause", "stop":
+		// Map pause to UPnP AVTransport#Stop to avoid DLNA renderer 501/701 lockups and DAC FIFO underruns
 		return Stop(ctx, m.httpClient, dev.ControlURL)
 	case "seek":
 		return Seek(ctx, m.httpClient, dev.ControlURL, timeOffset)

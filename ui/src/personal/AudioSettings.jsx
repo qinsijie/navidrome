@@ -105,7 +105,7 @@ const AudioSettings = () => {
   const [hqConfig, setHqConfig] = useState({
     name: 'HQPlayer - 客厅',
     host: '',
-    port: 32400,
+    port: 4321,
     enabled: false,
   })
   const [hqTesting, setHqTesting] = useState(false)
@@ -136,7 +136,7 @@ const AudioSettings = () => {
             setHqConfig({
               name: json.hqConfig.name || 'HQPlayer - 客厅',
               host: json.hqConfig.host || '',
-              port: json.hqConfig.port || 32400,
+              port: json.hqConfig.port || 4321,
               enabled: json.hqConfig.enabled || false,
             })
           }
@@ -183,7 +183,7 @@ const AudioSettings = () => {
       body: JSON.stringify({
         name: hqConfig.name,
         host: hqConfig.host.trim(),
-        port: parseInt(hqConfig.port, 10) || 32400,
+        port: parseInt(hqConfig.port, 10) || 4321,
         enabled: hqConfig.enabled,
       }),
     })
@@ -208,7 +208,7 @@ const AudioSettings = () => {
       method: 'POST',
       body: JSON.stringify({
         host: hqConfig.host.trim(),
-        port: parseInt(hqConfig.port, 10) || 32400,
+        port: parseInt(hqConfig.port, 10) || 4321,
       }),
     })
       .then(({ json }) => {
@@ -419,7 +419,7 @@ const AudioSettings = () => {
                 type="number"
                 value={hqConfig.port}
                 onChange={(e) => setHqConfig({ ...hqConfig, port: e.target.value })}
-                placeholder="32400"
+                placeholder="4321"
               />
             </Grid>
           </Grid>

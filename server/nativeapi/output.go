@@ -2,11 +2,10 @@ package nativeapi
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/core/output"
 	"github.com/navidrome/navidrome/log"
 )
@@ -46,21 +45,8 @@ type playStreamRequest struct {
 	TimeOffset float64 `json:"timeOffset,omitempty"`
 }
 
-func resolveOutboundURL(r *http.Request, rawURL string) string {
-	if strings.HasPrefix(rawURL, "/") {
-		scheme := "http"
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-			scheme = "https"
-		}
-		rawURL = fmt.Sprintf("%s://%s%s", scheme, r.Host, rawURL)
-	}
-
-	host := r.Host
-	if host != "" && !strings.HasPrefix(host, "localhost") && !strings.HasPrefix(host, "127.0.0.1") {
-		rawURL = strings.Replace(rawURL, "localhost:4533", host, 1)
-		rawURL = strings.Replace(rawURL, "127.0.0.1:4533", host, 1)
-	}
-	return rawURL
+func resolveOutboundURL(r *http.Request, rawURL string, targetHost string) string {
+	return output.ResolveOutboundURL(r, rawURL, conf.Server.Port, targetHost)
 }
 
 func (api *Router) addOutputRoutes(r chi.Router) {
@@ -183,7 +169,7 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			return
 		}
 
-		resolvedURL := resolveOutboundURL(r, req.StreamURL)
+		resolvedURL := resolveOutboundURL(r, req.StreamURL, mgr.GetActiveTargetHost())
 		meta := output.TrackMetadata{
 			TrackID: req.TrackID,
 			Title:   req.Title,

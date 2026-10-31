@@ -162,7 +162,13 @@ const Player = () => {
     if (activeOutputDevice !== 'local') {
       if (audioInstance && !audioInstance.paused && currentTrackIdRef.current) {
         const current = playerStateRef.current?.current || {}
-        if (current.musicSrc) {
+        const rawStreamUrl =
+          !current.isRadio && current.trackId
+            ? subsonic.streamUrl(current.trackId, { format: 'raw' })
+            : typeof current.musicSrc === 'string'
+              ? current.musicSrc
+              : ''
+        if (rawStreamUrl) {
           httpClient('/api/output/play', {
             method: 'POST',
             body: JSON.stringify({
@@ -170,7 +176,7 @@ const Player = () => {
               title: current.song?.title || current.name || '',
               artist: current.song?.artist || current.singer || '',
               album: current.song?.album || '',
-              streamUrl: current.musicSrc,
+              streamUrl: rawStreamUrl,
               timeOffset: audioInstance.currentTime || 0,
             }),
           }).catch(() => {})
@@ -373,19 +379,27 @@ const Player = () => {
       dispatch(currentPlaying(info))
       if (info.isPlaceholder) return
 
-      // Real remote streaming dispatch
-      if (activeOutputDeviceRef.current !== 'local' && info.musicSrc) {
-        httpClient('/api/output/play', {
-          method: 'POST',
-          body: JSON.stringify({
-            trackId: info.trackId,
-            title: info.song?.title || info.name || '',
-            artist: info.song?.artist || info.singer || '',
-            album: info.song?.album || '',
-            streamUrl: info.musicSrc,
-            timeOffset: info.currentTime || 0,
-          }),
-        }).catch(() => {})
+      // Real remote streaming dispatch (use direct raw stream URL to support HQPlayer/DLNA HTTP Range requests)
+      if (activeOutputDeviceRef.current !== 'local') {
+        const rawStreamUrl =
+          !info.isRadio && info.trackId
+            ? subsonic.streamUrl(info.trackId, { format: 'raw' })
+            : typeof info.musicSrc === 'string'
+              ? info.musicSrc
+              : ''
+        if (rawStreamUrl) {
+          httpClient('/api/output/play', {
+            method: 'POST',
+            body: JSON.stringify({
+              trackId: info.trackId,
+              title: info.song?.title || info.name || '',
+              artist: info.song?.artist || info.singer || '',
+              album: info.song?.album || '',
+              streamUrl: rawStreamUrl,
+              timeOffset: info.currentTime || 0,
+            }),
+          }).catch(() => {})
+        }
       }
 
       if (info.duration) {

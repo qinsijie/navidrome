@@ -1,10 +1,12 @@
 import React from 'react'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, beforeEach, vi } from 'vitest'
 import { Provider } from 'react-redux'
+import { Router } from 'react-router-dom'
+import { createMemoryHistory } from 'history'
 import { createStore, combineReducers } from 'redux'
 import { activityReducer } from '../reducers'
-import AppBar from './AppBar'
+import AppBar, { NavBackButton } from './AppBar'
 import config from '../config'
 
 let store
@@ -108,5 +110,25 @@ describe('<AppBar />', () => {
     )
     expect(screen.getByText('resources.player.menuName')).toBeInTheDocument()
     expect(screen.getByText('resources.transcoding.name')).toBeInTheDocument()
+  })
+
+  it('enables NavBackButton when route history depth > 1 and calls history.goBack()', () => {
+    const history = createMemoryHistory()
+    const goBackSpy = vi.spyOn(history, 'goBack')
+
+    render(
+      <Router history={history}>
+        <NavBackButton />
+      </Router>,
+    )
+
+    const btn = screen.getByTestId('nav-back-button')
+    expect(btn).toBeDisabled()
+
+    history.push('/album/123/show')
+    expect(btn).not.toBeDisabled()
+
+    fireEvent.click(btn)
+    expect(goBackSpy).toHaveBeenCalledTimes(1)
   })
 })
