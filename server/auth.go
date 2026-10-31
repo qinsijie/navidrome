@@ -86,7 +86,7 @@ func fnosLogin(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) 
 		if user == nil {
 			users, errUsers := userRepo.GetAll(ctx)
 			if errUsers == nil && len(users) > 0 {
-				user = users[0]
+				user = &users[0]
 			}
 		}
 
