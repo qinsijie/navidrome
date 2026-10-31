@@ -384,29 +384,10 @@ func (bw *burstResponseWriter) ReadFrom(r io.Reader) (int64, error) {
 		return totalWritten, err
 	}
 
-	// 2. High-speed raw streaming in 256KB chunks for smooth sustained throughput
-	chunkBuf := make([]byte, 256*1024)
-	for {
-		rn, rerr := r.Read(chunkBuf)
-		if rn > 0 {
-			wn, werr := bw.ResponseWriter.Write(chunkBuf[:rn])
-			totalWritten += int64(wn)
-			if bw.flusher != nil {
-				bw.flusher.Flush()
-			}
-			if werr != nil {
-				return totalWritten, werr
-			}
-		}
-		if rerr != nil {
-			if errors.Is(rerr, io.EOF) {
-				break
-			}
-			return totalWritten, rerr
-		}
-	}
-
-	return totalWritten, nil
+	// 2. Smooth sustained throughput via standard streaming without artificial Flush() interruptions
+	written, err := io.Copy(bw.ResponseWriter, r)
+	totalWritten += written
+	return totalWritten, err
 }
 
 func (bw *burstResponseWriter) Flush() {

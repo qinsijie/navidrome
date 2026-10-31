@@ -36,7 +36,8 @@ type addDLNARequest struct {
 }
 
 type playbackControlRequest struct {
-	Action     string  `json:"action"` // play, pause, stop, next, prev, seek, volume
+	Action     string  `json:"action"` // play, pause, stop, next, prev, jump, seek, volume
+	Index      int     `json:"index,omitempty"`
 	TimeOffset float64 `json:"timeOffset,omitempty"`
 	Volume     int     `json:"volume,omitempty"` // 0-100
 }
@@ -354,14 +355,14 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		if req.Action == "seek" && req.TimeOffset < 1.0 {
 			req.TimeOffset = 0
 		}
-		if err := mgr.ControlPlayback(r.Context(), req.Action, req.TimeOffset, req.Volume); err != nil {
+		if err := mgr.ControlPlaybackWithIndex(r.Context(), req.Action, req.Index, req.TimeOffset, req.Volume); err != nil {
 			log.Error(r.Context(), "Failed to control output device", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "nowPlaying": mgr.GetNowPlaying()})
 	})
 
 	r.Post("/output/pause", func(w http.ResponseWriter, r *http.Request) {

@@ -180,16 +180,24 @@ const Player = () => {
     }
   }, [])
 
+  const remoteProgressRef = useRef({
+    timeOffset: 0,
+    startedAt: 0,
+    playing: false,
+    duration: 0,
+    trackId: null,
+    currentIndex: -1,
+  })
+
   useEffect(() => {
     if (audioInstance) {
       if (activeOutputDevice !== 'local') {
         audioInstance.muted = true
         audioInstance.pause()
-        if (audioInstance.src) {
-          audioInstance.removeAttribute('src')
-          audioInstance.load()
-        }
       } else {
+        try {
+          delete audioInstance.currentTime
+        } catch (e) {}
         audioInstance.muted = false
       }
     }
@@ -222,22 +230,67 @@ const Player = () => {
     }).catch(() => {})
   }, [activeOutputDevice, playerState.queue, playerState.playIndex, playerState.clear])
 
+  // Sync state from server session every 2 seconds
   useInterval(
     () => {
       if (activeOutputDevice !== 'local') {
         httpClient('/api/output/status')
           .then(({ json }) => {
-            if (json && json.track && json.track.trackId) {
-              if (currentTrackIdRef.current !== json.track.trackId) {
-                currentTrackIdRef.current = json.track.trackId
-                setCurrentTrackId(json.track.trackId)
+            if (json) {
+              remoteProgressRef.current = {
+                timeOffset: json.timeOffset || 0,
+                startedAt: json.startedAt || 0,
+                playing: json.state === 'playing',
+                duration: json.track?.duration || 0,
+                trackId: json.track?.trackId || null,
+                currentIndex: json.currentIndex ?? -1,
+              }
+
+              // When server switches to another track, update Redux state so UI updates
+              const serverIdx = json.currentIndex
+              const queue = playerStateRef.current?.queue
+              if (
+                serverIdx >= 0 &&
+                queue &&
+                queue[serverIdx] &&
+                (playerStateRef.current.savedPlayIndex !== serverIdx ||
+                  playerStateRef.current.current?.trackId !== json.track?.trackId)
+              ) {
+                const newTrack = queue[serverIdx]
+                dispatch(currentPlaying(newTrack))
+                currentTrackIdRef.current = newTrack.trackId
+                setCurrentTrackId(newTrack.trackId)
               }
             }
           })
           .catch(() => {})
       }
     },
-    activeOutputDevice !== 'local' ? 3000 : null,
+    activeOutputDevice !== 'local' ? 2000 : null,
+  )
+
+  // Drive visual progress bar and time label forward smoothly every second
+  useInterval(
+    () => {
+      if (activeOutputDevice !== 'local' && remoteProgressRef.current.playing) {
+        const info = remoteProgressRef.current
+        const now = Date.now()
+        const elapsed = info.startedAt > 0 ? (now - info.startedAt) / 1000 : 0
+        const currentSec = Math.max(0, info.timeOffset + elapsed)
+
+        if (audioInstance) {
+          try {
+            Object.defineProperty(audioInstance, 'currentTime', {
+              value: currentSec,
+              writable: true,
+              configurable: true,
+            })
+            audioInstance.dispatchEvent(new Event('timeupdate'))
+          } catch (e) {}
+        }
+      }
+    },
+    activeOutputDevice !== 'local' ? 1000 : null,
   )
 
   useEffect(() => {
@@ -443,15 +496,28 @@ const Player = () => {
         if (audioInstance) {
           audioInstance.muted = true
           audioInstance.pause()
-          if (audioInstance.src) {
-            audioInstance.removeAttribute('src')
-            audioInstance.load()
-          }
         }
-        httpClient('/api/output/control', {
-          method: 'POST',
-          body: JSON.stringify({ action: 'play' }),
-        }).catch(() => {})
+        if (currentTrackIdRef.current && currentTrackIdRef.current !== info.trackId) {
+          const targetIndex = playerStateRef.current?.queue?.findIndex(
+            (item) => item.trackId === info.trackId,
+          )
+          if (targetIndex >= 0) {
+            httpClient('/api/output/control', {
+              method: 'POST',
+              body: JSON.stringify({ action: 'jump', index: targetIndex }),
+            }).catch(() => {})
+          } else {
+            httpClient('/api/output/control', {
+              method: 'POST',
+              body: JSON.stringify({ action: 'next' }),
+            }).catch(() => {})
+          }
+        } else {
+          httpClient('/api/output/control', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'play' }),
+          }).catch(() => {})
+        }
       }
 
       if (info.duration) {

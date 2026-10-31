@@ -552,7 +552,7 @@ func (m *Manager) playTrackOnDevice(ctx context.Context, deviceID string, meta T
 	return nil
 }
 
-func (m *Manager) ControlPlayback(ctx context.Context, action string, timeOffset float64, volume int) error {
+func (m *Manager) ControlPlaybackWithIndex(ctx context.Context, action string, index int, timeOffset float64, volume int) error {
 	activeID := m.GetActiveDevice()
 	if activeID != string(DeviceTypeLocal) && m.session != nil {
 		switch action {
@@ -566,6 +566,8 @@ func (m *Manager) ControlPlayback(ctx context.Context, action string, timeOffset
 			return m.session.Next(true)
 		case "prev":
 			return m.session.Prev()
+		case "jump":
+			return m.session.PlayTrackAt(index, timeOffset)
 		case "seek":
 			return m.session.Seek(timeOffset)
 		case "volume":
@@ -573,6 +575,10 @@ func (m *Manager) ControlPlayback(ctx context.Context, action string, timeOffset
 		}
 	}
 	return m.controlDevice(ctx, activeID, action, timeOffset, volume)
+}
+
+func (m *Manager) ControlPlayback(ctx context.Context, action string, timeOffset float64, volume int) error {
+	return m.ControlPlaybackWithIndex(ctx, action, -1, timeOffset, volume)
 }
 
 func (m *Manager) controlDevice(ctx context.Context, deviceID string, action string, timeOffset float64, volume int) error {
