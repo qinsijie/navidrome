@@ -31,6 +31,14 @@ const useStyles = makeStyles((theme) => ({
     margin: 0,
     height: 24,
   },
+  mobileZoneItem: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    listStyle: 'none',
+    padding: '0 4px',
+    margin: 0,
+  },
   button: {
     width: '2.5rem',
     height: '2.5rem',
@@ -101,7 +109,7 @@ const PlayerToolbar = ({ id, isRadio }) => {
   )
 
   const outputSelector = (
-    <OutputDeviceSelector isDesktop={isDesktop} className={buttonClass} />
+    <OutputDeviceSelector isDesktop={isDesktop} />
   )
 
   return (
@@ -115,7 +123,7 @@ const PlayerToolbar = ({ id, isRadio }) => {
         </li>
       ) : (
         <>
-          <li className={`${listItemClass} item`}>{outputSelector}</li>
+          <li className={`${classes.mobileZoneItem} item`}>{outputSelector}</li>
           <li className={`${listItemClass} item`}>{saveQueueButton}</li>
           <li className={`${listItemClass} item`}>{loveButton}</li>
         </>

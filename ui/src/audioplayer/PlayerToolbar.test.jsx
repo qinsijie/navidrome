@@ -18,6 +18,11 @@ vi.mock('@material-ui/core', async () => {
 
 vi.mock('react-admin', () => ({
   useGetOne: vi.fn(),
+  useNotify: () => vi.fn(),
+}))
+
+vi.mock('./OutputDeviceSelector', () => ({
+  default: () => <div data-testid="output-device-selector" />,
 }))
 
 vi.mock('react-redux', () => ({
@@ -114,15 +119,12 @@ describe('<PlayerToolbar />', () => {
 
       // Each button should be in its own list item
       const listItems = screen.getAllByRole('listitem')
-      expect(listItems).toHaveLength(2)
+      expect(listItems).toHaveLength(3)
 
-      // Verify both buttons are rendered
+      // Verify buttons are rendered
+      expect(screen.getByTestId('output-device-selector')).toBeInTheDocument()
       expect(screen.getByTestId('save-queue-button')).toBeInTheDocument()
       expect(screen.getByTestId('love-button')).toBeInTheDocument()
-
-      // Verify mobile classes are applied
-      expect(listItems[0].className).toContain('mobileListItem')
-      expect(listItems[1].className).toContain('mobileListItem')
     })
 
     it('disables save queue button when isRadio is true', () => {

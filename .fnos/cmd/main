@@ -46,6 +46,7 @@ setup_directories_and_pool() {
     export ND_DATAFOLDER="${DATA_DIR}/data"
     export ND_CACHEFOLDER="${DATA_DIR}/data/cache"
     export ND_MUSICFOLDER="${POOL_DIR}"
+    export ND_DEFAULTLANGUAGE="zh-Hans"
 }
 
 start_process() {

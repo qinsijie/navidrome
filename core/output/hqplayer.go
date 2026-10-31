@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 // HQPlayerConfig stores configuration for HQPlayer node
 type HQPlayerConfig struct {
+	Name    string `json:"name"`
 	Host    string `json:"host"`
 	Port    int    `json:"port"`
 	Enabled bool   `json:"enabled"`
@@ -26,8 +28,36 @@ type HQPlayerClient struct {
 
 func NewHQPlayerClient() *HQPlayerClient {
 	return &HQPlayerClient{
-		client: &http.Client{Timeout: 5 * time.Second},
+		client: &http.Client{Timeout: 3 * time.Second},
 	}
+}
+
+// TestConnection tests TCP reachability and optional API response
+func (c *HQPlayerClient) TestConnection(ctx context.Context, host string, port int) (bool, string) {
+	if host == "" {
+		return false, "请输入 HQPlayer 主机 IP 或主机名"
+	}
+	if port <= 0 {
+		port = 32400
+	}
+	target := fmt.Sprintf("%s:%d", host, port)
+
+	d := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", target)
+	if err != nil {
+		return false, fmt.Sprintf("无法连接到 %s: %v", target, err)
+	}
+	_ = conn.Close()
+
+	// TCP connected successfully! Also check HTTP endpoint
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s/api/player", target), nil)
+	resp, err := c.client.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+		return true, fmt.Sprintf("成功连接至 HQPlayer 节点 (%s)", target)
+	}
+
+	return true, fmt.Sprintf("TCP 握手成功 (%s: 端口开放已就绪)", target)
 }
 
 // PlayRawStream pushes the direct raw audio stream URL to HQPlayer
@@ -39,7 +69,6 @@ func (c *HQPlayerClient) PlayRawStream(ctx context.Context, cfg HQPlayerConfig, 
 	baseURL := fmt.Sprintf("http://%s:%d", cfg.Host, cfg.Port)
 	log.Info(fmt.Sprintf("Sending raw audio stream to HQPlayer node %s: %s", baseURL, streamURL))
 
-	// HQPlayer Control API: POST /api/playlist/add or /api/player/play
 	payload, _ := json.Marshal(map[string]interface{}{
 		"url":    streamURL,
 		"title":  meta.Title,
@@ -55,7 +84,6 @@ func (c *HQPlayerClient) PlayRawStream(ctx context.Context, cfg HQPlayerConfig, 
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		// Fallback to simple query string format if REST JSON fails
 		playURL := fmt.Sprintf("%s/api/player/play?url=%s", baseURL, streamURL)
 		req2, err2 := http.NewRequestWithContext(ctx, http.MethodGet, playURL, nil)
 		if err2 != nil {
@@ -82,15 +110,12 @@ func (c *HQPlayerClient) CheckStatus(ctx context.Context, cfg HQPlayerConfig) bo
 	if cfg.Host == "" || cfg.Port <= 0 {
 		return false
 	}
-	url := fmt.Sprintf("http://%s:%d/api/player", cfg.Host, cfg.Port)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	target := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	d := net.Dialer{Timeout: 1500 * time.Millisecond}
+	conn, err := d.DialContext(ctx, "tcp", target)
 	if err != nil {
 		return false
 	}
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode < 400
+	_ = conn.Close()
+	return true
 }

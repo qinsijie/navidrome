@@ -14,7 +14,9 @@ type Device struct {
 	Type        DeviceType `json:"type"`
 	URL         string     `json:"url,omitempty"`
 	ControlURL  string     `json:"controlUrl,omitempty"`
+	Enabled     bool       `json:"enabled"`
 	Active      bool       `json:"active"`
+	Status      string     `json:"status"` // "ready", "connected", "online", "offline", "unconfigured"
 	Description string     `json:"description,omitempty"`
 }
 

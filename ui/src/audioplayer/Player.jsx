@@ -218,6 +218,7 @@ const Player = () => {
       toggleMode: false,
       showMiniProcessBar: false,
       drag: false,
+      responsive: false,
       glassBg: false,
       showThemeSwitch: false,
       showMediaSession: true,

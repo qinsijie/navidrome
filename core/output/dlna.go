@@ -16,22 +16,34 @@ import (
 	"github.com/navidrome/navidrome/log"
 )
 
-const (
-	ssdpMulticastAddr = "239.255.255.250:1900"
-	ssdpSearchMsg     = "M-SEARCH * HTTP/1.1\r\n" +
+const ssdpMulticastAddr = "239.255.255.250:1900"
+
+var ssdpQueries = []string{
+	"M-SEARCH * HTTP/1.1\r\n" +
 		"HOST: 239.255.255.250:1900\r\n" +
 		"MAN: \"ssdp:discover\"\r\n" +
 		"MX: 3\r\n" +
-		"ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n"
-)
+		"ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n",
+	"M-SEARCH * HTTP/1.1\r\n" +
+		"HOST: 239.255.255.250:1900\r\n" +
+		"MAN: \"ssdp:discover\"\r\n" +
+		"MX: 3\r\n" +
+		"ST: urn:schemas-upnp-org:service:AVTransport:1\r\n\r\n",
+	"M-SEARCH * HTTP/1.1\r\n" +
+		"HOST: 239.255.255.250:1900\r\n" +
+		"MAN: \"ssdp:discover\"\r\n" +
+		"MX: 3\r\n" +
+		"ST: ssdp:all\r\n\r\n",
+}
 
-// DLNADevice represents a discovered DLNA MediaRenderer
+// DLNADevice represents a discovered or manually added DLNA MediaRenderer
 type DLNADevice struct {
-	UDN         string
-	Name        string
-	Location    string
-	ControlURL  string
-	LastSeen    time.Time
+	UDN        string    `json:"udn"`
+	Name       string    `json:"name"`
+	Location   string    `json:"location"`
+	ControlURL string    `json:"controlUrl"`
+	Enabled    bool      `json:"enabled"`
+	LastSeen   time.Time `json:"lastSeen"`
 }
 
 // DLNAScanner performs SSDP multicast discovery for DLNA DMR devices
@@ -44,11 +56,11 @@ type DLNAScanner struct {
 func NewDLNAScanner() *DLNAScanner {
 	return &DLNAScanner{
 		devices: make(map[string]*DLNADevice),
-		client:  &http.Client{Timeout: 5 * time.Second},
+		client:  &http.Client{Timeout: 4 * time.Second},
 	}
 }
 
-// Discover sends an SSDP M-SEARCH broadcast and collects responses
+// Discover sends SSDP M-SEARCH broadcasts across multicast and collects responses
 func (s *DLNAScanner) Discover(ctx context.Context, timeout time.Duration) ([]DLNADevice, error) {
 	addr, err := net.ResolveUDPAddr("udp4", ssdpMulticastAddr)
 	if err != nil {
@@ -61,8 +73,8 @@ func (s *DLNAScanner) Discover(ctx context.Context, timeout time.Duration) ([]DL
 	}
 	defer conn.Close()
 
-	if _, err := conn.WriteTo([]byte(ssdpSearchMsg), addr); err != nil {
-		return nil, fmt.Errorf("write ssdp msg: %w", err)
+	for _, msg := range ssdpQueries {
+		_, _ = conn.WriteTo([]byte(msg), addr)
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -100,6 +112,78 @@ func (s *DLNAScanner) Discover(ctx context.Context, timeout time.Duration) ([]DL
 		res = append(res, *dev)
 	}
 	return res, nil
+}
+
+// FetchDeviceFromURL allows manual addition of a DLNA DMR device
+func (s *DLNAScanner) FetchDeviceFromURL(ctx context.Context, loc string, customName string) (*DLNADevice, error) {
+	if !strings.HasPrefix(loc, "http://") && !strings.HasPrefix(loc, "https://") {
+		loc = "http://" + loc
+	}
+
+	// Try fetching desc XML
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("无法连接到该设备 URL: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var root rootXML
+	if err := xml.Unmarshal(body, &root); err != nil {
+		return nil, fmt.Errorf("解析 UPnP 设备描述 XML 失败: %w", err)
+	}
+
+	var avTransportControlURL string
+	for _, svc := range root.Device.ServiceList.Services {
+		if strings.Contains(svc.ServiceType, "AVTransport") {
+			avTransportControlURL = svc.ControlURL
+			break
+		}
+	}
+
+	if avTransportControlURL == "" {
+		return nil, fmt.Errorf("该设备未声明 AVTransport 串流播放服务")
+	}
+
+	baseURL, err := url.Parse(loc)
+	if err == nil {
+		ctrlURL, err := url.Parse(avTransportControlURL)
+		if err == nil {
+			avTransportControlURL = baseURL.ResolveReference(ctrlURL).String()
+		}
+	}
+
+	name := root.Device.FriendlyName
+	if customName != "" {
+		name = customName
+	}
+	udn := root.Device.UDN
+	if udn == "" {
+		udn = loc
+	}
+
+	dev := &DLNADevice{
+		UDN:        udn,
+		Name:       name,
+		Location:   loc,
+		ControlURL: avTransportControlURL,
+		Enabled:    true,
+		LastSeen:   time.Now(),
+	}
+
+	s.mu.Lock()
+	s.devices[udn] = dev
+	s.mu.Unlock()
+
+	return dev, nil
 }
 
 // XML structures for UPnP device description
@@ -157,7 +241,6 @@ func (s *DLNAScanner) fetchDeviceDesc(location string) {
 		return
 	}
 
-	// Resolve relative ControlURL
 	baseURL, err := url.Parse(location)
 	if err == nil {
 		ctrlURL, err := url.Parse(avTransportControlURL)
@@ -174,17 +257,22 @@ func (s *DLNAScanner) fetchDeviceDesc(location string) {
 		udn = location
 	}
 
+	enabled := true
+	if old, exists := s.devices[udn]; exists {
+		enabled = old.Enabled
+	}
+
 	s.devices[udn] = &DLNADevice{
 		UDN:        udn,
 		Name:       root.Device.FriendlyName,
 		Location:   location,
 		ControlURL: avTransportControlURL,
+		Enabled:    enabled,
 		LastSeen:   time.Now(),
 	}
 	log.Info("Discovered DLNA DMR: " + root.Device.FriendlyName + " (" + avTransportControlURL + ")")
 }
 
-// SOAP helpers for UPnP AVTransport control
 func sendSOAP(ctx context.Context, client *http.Client, controlURL, action, body string) error {
 	soapBody := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
@@ -216,7 +304,6 @@ func sendSOAP(ctx context.Context, client *http.Client, controlURL, action, body
 	return nil
 }
 
-// SetAVTransportURI sets the target media URL and metadata
 func SetAVTransportURI(ctx context.Context, client *http.Client, controlURL, streamURI, title, artist string) error {
 	didlLite := fmt.Sprintf(`&lt;DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"&gt;&lt;item id="0" parentID="-1" restricted="1"&gt;&lt;dc:title&gt;%s&lt;/dc:title&gt;&lt;dc:creator&gt;%s&lt;/dc:creator&gt;&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;&lt;res&gt;%s&lt;/res&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;`,
 		escapeXML(title), escapeXML(artist), escapeXML(streamURI))
@@ -227,19 +314,16 @@ func SetAVTransportURI(ctx context.Context, client *http.Client, controlURL, str
 	return sendSOAP(ctx, client, controlURL, "SetAVTransportURI", body)
 }
 
-// Play sends the Play command
 func Play(ctx context.Context, client *http.Client, controlURL string) error {
 	body := `<InstanceID>0</InstanceID><Speed>1</Speed>`
 	return sendSOAP(ctx, client, controlURL, "Play", body)
 }
 
-// Pause sends the Pause command
 func Pause(ctx context.Context, client *http.Client, controlURL string) error {
 	body := `<InstanceID>0</InstanceID>`
 	return sendSOAP(ctx, client, controlURL, "Pause", body)
 }
 
-// Stop sends the Stop command
 func Stop(ctx context.Context, client *http.Client, controlURL string) error {
 	body := `<InstanceID>0</InstanceID>`
 	return sendSOAP(ctx, client, controlURL, "Stop", body)

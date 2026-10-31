@@ -1,36 +1,59 @@
 import React, { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
-  IconButton,
   Menu,
   MenuItem,
   ListItemIcon,
   ListItemText,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  TextField,
-  Button,
   Typography,
   Tooltip,
+  Divider,
+  ButtonBase,
 } from '@material-ui/core'
 import { makeStyles } from '@material-ui/core/styles'
 import {
-  MdDevices,
   MdSpeaker,
   MdComputer,
   MdCheck,
   MdTune,
   MdSettings,
+  MdArrowForward,
 } from 'react-icons/md'
 import { useNotify } from 'react-admin'
 import { httpClient } from '../dataProvider'
 
 const useStyles = makeStyles((theme) => ({
+  zoneBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '3px 8px',
+    borderRadius: 14,
+    border: `1px solid ${theme.palette.divider}`,
+    backgroundColor: theme.palette.action.hover,
+    color: theme.palette.text.primary,
+    fontSize: '0.78rem',
+    fontWeight: 500,
+    cursor: 'pointer',
+    maxWidth: 160,
+    whiteSpace: 'nowrap',
+    transition: 'all 0.2s ease',
+    '&:hover': {
+      backgroundColor: theme.palette.action.selected,
+      borderColor: theme.palette.primary.main,
+    },
+  },
+  badgeText: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    maxWidth: 100,
+    fontSize: '0.78rem',
+  },
   menuHeader: {
     padding: '8px 16px',
     fontWeight: 'bold',
-    fontSize: '0.875rem',
+    fontSize: '0.85rem',
     color: theme.palette.text.secondary,
     borderBottom: `1px solid ${theme.palette.divider}`,
   },
@@ -46,9 +69,18 @@ const useStyles = makeStyles((theme) => ({
     fontSize: '0.75rem',
     color: theme.palette.text.secondary,
   },
-  configRow: {
-    borderTop: `1px solid ${theme.palette.divider}`,
-    marginTop: 4,
+  footerItem: {
+    padding: '10px 16px',
+    color: theme.palette.primary.main,
+    fontSize: '0.85rem',
+    fontWeight: 500,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    textDecoration: 'none',
+    '&:hover': {
+      backgroundColor: theme.palette.action.hover,
+    },
   },
 }))
 
@@ -58,24 +90,13 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
   const [anchorEl, setAnchorEl] = useState(null)
   const [devices, setDevices] = useState([])
   const [activeId, setActiveId] = useState('local')
-  const [hqConfig, setHqConfig] = useState({ host: '127.0.0.1', port: 32400, enabled: false })
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [hqForm, setHqForm] = useState({ host: '', port: 32400, enabled: true })
 
   const loadDevices = useCallback(() => {
-    httpClient('/api/output/devices')
+    httpClient('/api/output/devices?enabled_only=true')
       .then(({ json }) => {
         if (json) {
           if (json.devices) setDevices(json.devices)
           if (json.activeId) setActiveId(json.activeId)
-          if (json.hqConfig) {
-            setHqConfig(json.hqConfig)
-            setHqForm({
-              host: json.hqConfig.host || '',
-              port: json.hqConfig.port || 32400,
-              enabled: json.hqConfig.enabled || false,
-            })
-          }
         }
       })
       .catch(() => {})
@@ -101,7 +122,7 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
     })
       .then(() => {
         setActiveId(dev.id)
-        notify(`已切换音频输出至: ${dev.name}`, 'info')
+        notify(`音频输出已切换至: ${dev.name}`, 'info')
         handleClose()
       })
       .catch((err) => {
@@ -109,42 +130,29 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
       })
   }
 
-  const handleSaveHqConfig = () => {
-    httpClient('/api/output/hqplayer/config', {
-      method: 'POST',
-      body: JSON.stringify({
-        host: hqForm.host,
-        port: parseInt(hqForm.port, 10) || 32400,
-        enabled: hqForm.enabled,
-      }),
-    })
-      .then(() => {
-        notify('HQPlayer 配置已更新', 'info')
-        setDialogOpen(false)
-        loadDevices()
-      })
-      .catch((err) => {
-        notify(`保存失败: ${err.message}`, 'error')
-      })
+  const activeDevice = devices.find((d) => d.id === activeId) || {
+    id: 'local',
+    name: '本机',
+    type: 'local',
   }
 
   const getDeviceIcon = (dev) => {
-    if (dev.type === 'hqplayer') return <MdTune size={20} />
-    if (dev.type === 'dlna') return <MdSpeaker size={20} />
-    return <MdComputer size={20} />
+    if (dev.type === 'hqplayer') return <MdTune size={18} />
+    if (dev.type === 'dlna') return <MdSpeaker size={18} />
+    return <MdComputer size={18} />
   }
 
   return (
     <>
-      <Tooltip title="音频输出设备 (DLNA / HQPlayer)">
-        <IconButton
-          size={isDesktop ? 'small' : undefined}
+      <Tooltip title="音频输出设备切换 (Zone Picker)">
+        <ButtonBase
           onClick={handleClick}
-          className={className}
+          className={`${classes.zoneBadge} ${className || ''}`}
           data-testid="output-device-selector"
         >
-          <MdDevices size={isDesktop ? 20 : 18} />
-        </IconButton>
+          {getDeviceIcon(activeDevice)}
+          <span className={classes.badgeText}>{activeDevice.name}</span>
+        </ButtonBase>
       </Tooltip>
 
       <Menu
@@ -156,7 +164,7 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
         anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
         transformOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       >
-        <div className={classes.menuHeader}>Hi-Fi 音频输出设备</div>
+        <div className={classes.menuHeader}>音频输出分区 (Audio Zones)</div>
         {devices.map((dev) => {
           const isActive = dev.id === activeId
           return (
@@ -179,65 +187,25 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
                   <span className={classes.descText}>{dev.description}</span>
                 }
               />
-              {isActive && <MdCheck color="#31c27c" size={18} />}
+              {isActive && <MdCheck color="#31c27c" size={20} />}
             </MenuItem>
           )
         })}
 
+        <Divider />
         <MenuItem
-          onClick={() => {
-            handleClose()
-            setDialogOpen(true)
-          }}
-          className={`${classes.deviceItem} ${classes.configRow}`}
+          component={Link}
+          to="/settings/audio"
+          onClick={handleClose}
+          className={classes.footerItem}
         >
-          <ListItemIcon>
-            <MdSettings size={20} />
-          </ListItemIcon>
-          <ListItemText
-            primary={<Typography variant="body2">配置 HQPlayer 节点</Typography>}
-            secondary={<span className={classes.descText}>设置 IP 与控制端口直推</span>}
-          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <MdSettings size={18} />
+            <span>前往音频设置配置新设备</span>
+          </div>
+          <MdArrowForward size={16} />
         </MenuItem>
       </Menu>
-
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="xs" fullWidth>
-        <DialogTitle>配置 HQPlayer 源码直推节点</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" color="textSecondary" style={{ marginBottom: 16 }}>
-            启用后 Navidrome 将旁路重采样与转码流程，将高解析音频流 (PCM / DSD) 直推至 HQPlayer 引擎。
-          </Typography>
-          <TextField
-            label="HQPlayer IP / 主机名"
-            fullWidth
-            margin="dense"
-            variant="outlined"
-            value={hqForm.host}
-            onChange={(e) => setHqForm({ ...hqForm, host: e.target.value })}
-            placeholder="192.168.1.100"
-          />
-          <TextField
-            label="控制端口"
-            fullWidth
-            margin="dense"
-            variant="outlined"
-            type="number"
-            value={hqForm.port}
-            onChange={(e) => setHqForm({ ...hqForm, port: e.target.value })}
-            placeholder="32400"
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDialogOpen(false)}>取消</Button>
-          <Button
-            onClick={handleSaveHqConfig}
-            color="primary"
-            variant="contained"
-          >
-            保存并启用
-          </Button>
-        </DialogActions>
-      </Dialog>
     </>
   )
 }
