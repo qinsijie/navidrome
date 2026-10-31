@@ -260,6 +260,11 @@ const Player = () => {
                 dispatch(currentPlaying(newTrack))
                 currentTrackIdRef.current = newTrack.trackId
                 setCurrentTrackId(newTrack.trackId)
+                if (audioInstance && typeof audioInstance.playByIndex === 'function') {
+                  try {
+                    audioInstance.playByIndex(serverIdx)
+                  } catch (e) {}
+                }
               }
             }
           })
@@ -434,10 +439,16 @@ const Player = () => {
   const options = useMemo(() => {
     const current = playerState.current || {}
     const hasQueue = playerState.queue.length > 0
+    const activePlayIndex =
+      playerState.playIndex != null
+        ? playerState.playIndex
+        : playerState.savedPlayIndex != null && playerState.savedPlayIndex >= 0
+        ? playerState.savedPlayIndex
+        : 0
     return {
       ...defaultOptions,
       audioLists: hasQueue ? playerState.queue.map((item) => item) : placeholderTracks,
-      playIndex: hasQueue ? playerState.playIndex : 0,
+      playIndex: hasQueue ? activePlayIndex : 0,
       autoPlay:
         hasQueue &&
         playerState.autoPlay !== false &&
@@ -482,6 +493,34 @@ const Player = () => {
     [dispatch],
   )
 
+  const onPlayIndexChange = useCallback(
+    (playIndex) => {
+      if (activeOutputDeviceRef.current !== 'local') {
+        const queue = playerStateRef.current?.queue
+        if (queue && queue[playIndex]) {
+          const targetTrack = queue[playIndex]
+          currentTrackIdRef.current = targetTrack.trackId
+          setCurrentTrackId(targetTrack.trackId)
+          dispatch(currentPlaying(targetTrack))
+
+          if (remoteProgressRef.current.currentIndex !== playIndex) {
+            remoteProgressRef.current.currentIndex = playIndex
+            remoteProgressRef.current.trackId = targetTrack.trackId
+            remoteProgressRef.current.timeOffset = 0
+            remoteProgressRef.current.startedAt = Date.now()
+            remoteProgressRef.current.playing = true
+
+            httpClient('/api/output/control', {
+              method: 'POST',
+              body: JSON.stringify({ action: 'jump', index: playIndex }),
+            }).catch(() => {})
+          }
+        }
+      }
+    },
+    [dispatch],
+  )
+
   const onAudioPlay = useCallback(
     (info) => {
       if (context && context.state !== 'running') {
@@ -497,26 +536,31 @@ const Player = () => {
           audioInstance.muted = true
           audioInstance.pause()
         }
-        if (currentTrackIdRef.current && currentTrackIdRef.current !== info.trackId) {
-          const targetIndex = playerStateRef.current?.queue?.findIndex(
-            (item) => item.trackId === info.trackId,
-          )
-          if (targetIndex >= 0) {
-            httpClient('/api/output/control', {
-              method: 'POST',
-              body: JSON.stringify({ action: 'jump', index: targetIndex }),
-            }).catch(() => {})
-          } else {
-            httpClient('/api/output/control', {
-              method: 'POST',
-              body: JSON.stringify({ action: 'next' }),
-            }).catch(() => {})
-          }
-        } else {
+        const targetIndex = playerStateRef.current?.queue?.findIndex(
+          (item) => item.trackId === info.trackId,
+        )
+        if (
+          targetIndex >= 0 &&
+          targetIndex !== remoteProgressRef.current.currentIndex
+        ) {
+          remoteProgressRef.current.currentIndex = targetIndex
+          remoteProgressRef.current.trackId = info.trackId
+          remoteProgressRef.current.timeOffset = 0
+          remoteProgressRef.current.startedAt = Date.now()
+          remoteProgressRef.current.playing = true
           httpClient('/api/output/control', {
             method: 'POST',
-            body: JSON.stringify({ action: 'play' }),
+            body: JSON.stringify({ action: 'jump', index: targetIndex }),
           }).catch(() => {})
+        } else {
+          if (!remoteProgressRef.current.playing) {
+            remoteProgressRef.current.playing = true
+            remoteProgressRef.current.startedAt = Date.now()
+            httpClient('/api/output/control', {
+              method: 'POST',
+              body: JSON.stringify({ action: 'play' }),
+            }).catch(() => {})
+          }
         }
       }
 
@@ -559,15 +603,17 @@ const Player = () => {
   )
 
   const onAudioPlayTrackChange = useCallback(() => {
-    if (currentTrackId) {
-      subsonic.reportPlayback(
-        currentTrackId,
-        lastPositionMsRef.current,
-        'stopped',
-      )
+    if (activeOutputDeviceRef.current === 'local') {
+      if (currentTrackId) {
+        subsonic.reportPlayback(
+          currentTrackId,
+          lastPositionMsRef.current,
+          'stopped',
+        )
+      }
+      setHeartbeatTrackId(null)
+      setCurrentTrackId(null)
     }
-    setHeartbeatTrackId(null)
-    setCurrentTrackId(null)
   }, [currentTrackId])
 
   const onAudioPause = useCallback(
@@ -578,6 +624,7 @@ const Player = () => {
       // the pause event is a synthetic browser power-saving throttling event, NOT a user intent!
       // Do NOT send pause to remote hardware in background!
       if (activeOutputDeviceRef.current !== 'local' && !info.isPlaceholder) {
+        remoteProgressRef.current.playing = false
         if (!document.hidden && !isHiddenRef.current) {
           httpClient('/api/output/control', {
             method: 'POST',
@@ -598,6 +645,7 @@ const Player = () => {
   const onAudioEnded = useCallback(
     (currentPlayId, audioLists, info) => {
       if (info.isPlaceholder) return
+      if (activeOutputDeviceRef.current !== 'local') return
       if (currentTrackId && !info.isRadio) {
         const posMs = Math.floor((info.duration || 0) * 1000)
         subsonic.reportPlayback(currentTrackId, posMs, 'stopped')
@@ -782,6 +830,7 @@ const Player = () => {
         onAudioVolumeChange={onAudioVolumeChange}
         onAudioProgress={onAudioProgress}
         onAudioPlay={onAudioPlay}
+        onPlayIndexChange={onPlayIndexChange}
         onAudioPlayTrackChange={onAudioPlayTrackChange}
         onAudioPause={onAudioPause}
         onPlayModeChange={(mode) => dispatch(setPlayMode(mode))}
