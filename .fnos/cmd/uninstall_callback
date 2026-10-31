@@ -1,0 +1,36 @@
+#!/bin/bash
+# uninstall_callback - 安全清理 Navidrome 套件生成的数据文件
+
+DATA="$wizard_delete_data"
+LOG_FILE="/var/log/navidrome_uninstall.log"
+
+log_uninstall() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}" 2>/dev/null || true
+}
+
+log_uninstall "Navidrome 卸载脚本启动，用户数据清理选项: ${DATA}, TRIM_PKGVAR=${TRIM_PKGVAR}"
+
+case "$DATA" in
+    "true")
+        log_uninstall "用户勾选彻底清理：准备删除 Navidrome 数据库与缓存目录 ..."
+        if [ -n "$TRIM_PKGVAR" ] && [ -d "$TRIM_PKGVAR" ]; then
+            # 严格安全隔离保护：
+            # 仅删除 Navidrome 生成的应用数据库、缓存文件、日志和软链接池
+            # 绝对严禁触碰任何真实存储卷 /vol* 中的实体音乐原文件！
+            rm -rf "${TRIM_PKGVAR}/data" "${TRIM_PKGVAR}/cache" "${TRIM_PKGVAR}/*.log" "${TRIM_PKGVAR}/*.pid" 2>/dev/null || true
+            
+            # 删除池化软链接目录本身（只删软链接，不触碰指向的目标真实文件夹）
+            if [ -d "${TRIM_PKGVAR}/music_pool" ]; then
+                find "${TRIM_PKGVAR}/music_pool" -maxdepth 1 -type l -exec rm -f {} + 2>/dev/null || true
+                rmdir "${TRIM_PKGVAR}/music_pool" 2>/dev/null || true
+            fi
+            
+            log_uninstall "Navidrome 套件生成数据清理完成（音乐源文件完全安全未受影响）"
+        fi
+        ;;
+    "false"|*)
+        log_uninstall "用户选择保留数据文件，跳过数据清理"
+        ;;
+esac
+
+exit 0

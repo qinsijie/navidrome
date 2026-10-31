@@ -62,6 +62,29 @@ const authProvider = {
       })
   },
 
+  fnosLogin: () => {
+    const url = baseUrl('/auth/fnos-login')
+    return fetch(url, {
+      method: 'POST',
+      headers: new Headers({ 'Content-Type': 'application/json' }),
+    })
+      .then((response) => {
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(response.statusText)
+        }
+        return response.json()
+      })
+      .then((response) => {
+        if (response.firstTime) {
+          throw new Error('首次运行系统，请先创建管理员账号')
+        }
+        jwtDecode(response.token)
+        storeAuthenticationInfo(response)
+        config.firstTime = false
+        return response
+      })
+  },
+
   logout: () => {
     removeItems()
     // Only proxy-authenticated sessions go to the IdP; others (e.g. direct LAN access) get the login form

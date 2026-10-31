@@ -152,6 +152,34 @@ const Player = () => {
     }
   }, [])
 
+  const isHiddenRef = useRef(false)
+
+  // Decouple remote output from browser lifecycle: handle tab visibility and window focus
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      isHiddenRef.current = document.hidden
+      if (!document.hidden && activeOutputDeviceRef.current !== 'local') {
+        // Tab restored to foreground: re-align status silently without restarting stream
+        httpClient('/api/output/status')
+          .then(({ json }) => {
+            if (json && json.state) {
+              // Remote session is alive and playing autonomously on backend
+            }
+          })
+          .catch(() => {})
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('focus', handleVisibilityChange)
+    window.addEventListener('blur', () => {
+      isHiddenRef.current = true
+    })
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('focus', handleVisibilityChange)
+    }
+  }, [])
+
   useEffect(() => {
     if (audioInstance) {
       audioInstance.muted = activeOutputDevice !== 'local'
@@ -381,24 +409,32 @@ const Player = () => {
 
       // Real remote streaming dispatch (use direct raw stream URL to support HQPlayer/DLNA HTTP Range requests)
       if (activeOutputDeviceRef.current !== 'local') {
-        const rawStreamUrl =
-          !info.isRadio && info.trackId
-            ? subsonic.streamUrl(info.trackId, { format: 'raw' })
-            : typeof info.musicSrc === 'string'
-              ? info.musicSrc
-              : ''
-        if (rawStreamUrl) {
-          httpClient('/api/output/play', {
+        // If the same track is already playing and tab just woke up, don't restart it
+        if (currentTrackIdRef.current === info.trackId) {
+          httpClient('/api/output/control', {
             method: 'POST',
-            body: JSON.stringify({
-              trackId: info.trackId,
-              title: info.song?.title || info.name || '',
-              artist: info.song?.artist || info.singer || '',
-              album: info.song?.album || '',
-              streamUrl: rawStreamUrl,
-              timeOffset: (info.currentTime && info.currentTime >= 1.0) ? info.currentTime : 0,
-            }),
+            body: JSON.stringify({ action: 'play' }),
           }).catch(() => {})
+        } else {
+          const rawStreamUrl =
+            !info.isRadio && info.trackId
+              ? subsonic.streamUrl(info.trackId, { format: 'raw' })
+              : typeof info.musicSrc === 'string'
+                ? info.musicSrc
+                : ''
+          if (rawStreamUrl) {
+            httpClient('/api/output/play', {
+              method: 'POST',
+              body: JSON.stringify({
+                trackId: info.trackId,
+                title: info.song?.title || info.name || '',
+                artist: info.song?.artist || info.singer || '',
+                album: info.song?.album || '',
+                streamUrl: rawStreamUrl,
+                timeOffset: (info.currentTime && info.currentTime >= 1.0) ? info.currentTime : 0,
+              }),
+            }).catch(() => {})
+          }
         }
       }
 
@@ -455,11 +491,17 @@ const Player = () => {
   const onAudioPause = useCallback(
     (info) => {
       dispatch(currentPlaying(info))
+      // When remote output is active:
+      // STRICT GUARD: If tab is hidden/minimized/in background, or screen is sleeping,
+      // the pause event is a synthetic browser power-saving throttling event, NOT a user intent!
+      // Do NOT send pause to remote hardware in background!
       if (activeOutputDeviceRef.current !== 'local' && !info.isPlaceholder) {
-        httpClient('/api/output/control', {
-          method: 'POST',
-          body: JSON.stringify({ action: 'pause' }),
-        }).catch(() => {})
+        if (!document.hidden && !isHiddenRef.current) {
+          httpClient('/api/output/control', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'pause' }),
+          }).catch(() => {})
+        }
       }
       if (!info.isRadio && currentTrackId) {
         const posMs = Math.floor(info.currentTime * 1000)

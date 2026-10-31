@@ -48,6 +48,65 @@ func login(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// fnosLogin implements dual-track zero-click or one-click authentication for fnOS environments
+func fnosLogin(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		userRepo := ds.User()
+
+		candidateHeaders := []string{
+			"X-Fnos-User",
+			"X-Auth-User",
+			"Remote-User",
+			"X-Forwarded-User",
+			"X-Forwarded-Preferred-Username",
+			"X-Webauth-User",
+		}
+		var username string
+		for _, h := range candidateHeaders {
+			if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+				username = v
+				break
+			}
+		}
+
+		var user *model.User
+		var err error
+		if username != "" {
+			user, err = userRepo.FindByUsernameWithPassword(ctx, username)
+			if err != nil {
+				log.Warn(r, "fnosLogin: user from header not found, falling back to default admin", "username", username)
+			}
+		}
+
+		// Fall back to primary admin or first existing user
+		if user == nil {
+			user, _ = userRepo.FindFirstAdmin(ctx)
+		}
+		if user == nil {
+			users, errUsers := userRepo.GetAll(ctx)
+			if errUsers == nil && len(users) > 0 {
+				user = users[0]
+			}
+		}
+
+		if user == nil {
+			_ = rest.RespondWithJSON(w, http.StatusOK, map[string]any{"firstTime": true})
+			return
+		}
+
+		tokenString, err := auth.CreateToken(user)
+		if err != nil {
+			_ = rest.RespondWithError(w, http.StatusInternalServerError, "Failed to create token: "+err.Error())
+			return
+		}
+		_ = userRepo.UpdateLastLoginAt(ctx, user.ID)
+		payload := buildAuthPayload(user)
+		payload["token"] = tokenString
+		_ = rest.RespondWithJSON(w, http.StatusOK, payload)
+	}
+}
+
 func doLogin(ds model.DataStore, username string, password string, w http.ResponseWriter, r *http.Request) {
 	user, err := validateLogin(r.Context(), ds.User(), username, password)
 	if err != nil {

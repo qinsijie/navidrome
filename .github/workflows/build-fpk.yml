@@ -55,8 +55,10 @@ jobs:
           cp .fnos/logo.png navidrome_build/ICON.PNG
           cp .fnos/manifest navidrome_build/manifest
           sed -i 's|desktop_applaunchname = navidrome|desktop_applaunchname = navidrome.Application|' navidrome_build/manifest
-          cp .fnos/cmd/main navidrome_build/cmd/main
-          chmod +x navidrome_build/cmd/main
+          cp -r .fnos/cmd/* navidrome_build/cmd/
+          chmod +x navidrome_build/cmd/*
+          mkdir -p navidrome_build/wizard
+          cp -r .fnos/wizard/* navidrome_build/wizard/
 
           mkdir -p navidrome_build/app/app navidrome_build/app/config navidrome_build/app/ui/images
           cp build_pkg/app/navidrome navidrome_build/app/app/

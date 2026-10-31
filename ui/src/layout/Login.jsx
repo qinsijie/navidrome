@@ -21,6 +21,7 @@ import Logo from '../icons/android-icon-192x192.png'
 import Notification from './Notification'
 import useCurrentTheme from '../themes/useCurrentTheme'
 import config from '../config'
+import authProvider from '../authProvider'
 import { clearQueue } from '../actions'
 import { INSIGHTS_DOC_URL } from '../consts.js'
 
@@ -110,9 +111,10 @@ const renderInput = ({
   />
 )
 
-const FormLogin = ({ loading, handleSubmit, validate }) => {
+const FormLogin = ({ loading, handleSubmit, validate, onFnosLogin }) => {
   const translate = useTranslate()
   const classes = useStyles()
+  const [showManualLogin, setShowManualLogin] = useState(false)
 
   return (
     <Form
@@ -143,40 +145,81 @@ const FormLogin = ({ loading, handleSubmit, validate }) => {
                   dangerouslySetInnerHTML={{ __html: config.welcomeMessage }}
                 />
               )}
-              <div className={classes.form}>
-                <div className={classes.input}>
-                  <Field
-                    autoFocus
-                    name="username"
-                    component={renderInput}
-                    label={translate('ra.auth.username')}
-                    disabled={loading}
-                    spellCheck={false}
-                  />
-                </div>
-                <div className={classes.input}>
-                  <Field
-                    name="password"
-                    component={renderInput}
-                    label={translate('ra.auth.password')}
-                    type="password"
-                    disabled={loading}
-                  />
-                </div>
-              </div>
-              <CardActions className={classes.actions}>
+
+              {/* 主入口：使用当前飞牛账号免登 */}
+              <div style={{ padding: '1.2em 1.2em 0.4em 1.2em' }}>
                 <Button
                   variant="contained"
-                  type="submit"
-                  color="primary"
-                  disabled={loading}
-                  className={classes.button}
                   fullWidth
+                  disabled={loading}
+                  onClick={onFnosLogin}
+                  style={{
+                    backgroundColor: '#1976d2',
+                    color: '#ffffff',
+                    fontWeight: 'bold',
+                    fontSize: '1rem',
+                    padding: '10px 0',
+                    borderRadius: 8,
+                    textTransform: 'none',
+                    boxShadow: '0 4px 12px rgba(25, 118, 210, 0.35)',
+                  }}
                 >
-                  {loading && <CircularProgress size={25} thickness={2} />}
-                  {translate('ra.auth.sign_in')}
+                  {loading ? <CircularProgress size={24} style={{ color: '#fff' }} /> : '使用当前飞牛账号登录'}
                 </Button>
-              </CardActions>
+              </div>
+
+              {/* 次入口切换链接 */}
+              <div style={{ textAlign: 'center', margin: '8px 0 12px 0' }}>
+                <Button
+                  size="small"
+                  color="primary"
+                  onClick={() => setShowManualLogin((prev) => !prev)}
+                  style={{ textTransform: 'none', fontSize: '0.85rem' }}
+                >
+                  {showManualLogin ? '收起账号密码登录 ▲' : '使用 Navidrome 独立账号登录 ▼'}
+                </Button>
+              </div>
+
+              {/* 次入口：展开常规账号密码输入框 */}
+              {showManualLogin && (
+                <>
+                  <div className={classes.form}>
+                    <div className={classes.input}>
+                      <Field
+                        autoFocus
+                        name="username"
+                        component={renderInput}
+                        label={translate('ra.auth.username')}
+                        disabled={loading}
+                        spellCheck={false}
+                      />
+                    </div>
+                    <div className={classes.input}>
+                      <Field
+                        name="password"
+                        component={renderInput}
+                        label={translate('ra.auth.password')}
+                        type="password"
+                        disabled={loading}
+                      />
+                    </div>
+                  </div>
+                  <CardActions className={classes.actions}>
+                    <Button
+                      variant="outlined"
+                      type="submit"
+                      color="primary"
+                      disabled={loading}
+                      className={classes.button}
+                      fullWidth
+                      style={{ borderRadius: 8, fontWeight: 600 }}
+                    >
+                      {loading && <CircularProgress size={25} thickness={2} />}
+                      {translate('ra.auth.sign_in')}
+                    </Button>
+                  </CardActions>
+                </>
+              )}
             </Card>
             <Notification />
           </div>
@@ -376,6 +419,25 @@ const Login = ({ location }) => {
     [translate, validateLogin],
   )
 
+  const handleFnosLogin = useCallback(async () => {
+    setLoading(true)
+    dispatch(clearQueue())
+    try {
+      await authProvider.fnosLogin()
+      window.location.href = '/'
+    } catch (error) {
+      setLoading(false)
+      notify(
+        typeof error === 'string'
+          ? error
+          : typeof error === 'undefined' || !error.message
+            ? '飞牛账号免登失败，请使用下方账号密码登录'
+            : error.message,
+        'warning',
+      )
+    }
+  }, [dispatch, notify])
+
   if (config.firstTime) {
     return (
       <FormSignUp
@@ -390,6 +452,7 @@ const Login = ({ location }) => {
       handleSubmit={handleSubmit}
       validate={validateLogin}
       loading={loading}
+      onFnosLogin={handleFnosLogin}
     />
   )
 }

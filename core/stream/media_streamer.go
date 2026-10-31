@@ -143,7 +143,37 @@ type Stream struct {
 
 func (s *Stream) Seekable() bool      { return s.Seeker != nil }
 func (s *Stream) Duration() float32   { return s.mf.Duration }
-func (s *Stream) ContentType() string { return mime.TypeByExtension("." + s.format) }
+func (s *Stream) ContentType() string {
+	ext := strings.ToLower(strings.TrimPrefix(s.format, "."))
+	switch ext {
+	case "flac":
+		return "audio/flac"
+	case "wav", "wave":
+		return "audio/wav"
+	case "dsf":
+		return "audio/dsf"
+	case "dff":
+		return "audio/x-dff"
+	case "ape":
+		return "audio/x-ape"
+	case "wv":
+		return "audio/x-wavpack"
+	case "aif", "aiff":
+		return "audio/aiff"
+	case "mp3":
+		return "audio/mpeg"
+	case "m4a", "aac":
+		return "audio/mp4"
+	case "ogg", "oga":
+		return "audio/ogg"
+	case "opus":
+		return "audio/opus"
+	}
+	if t := mime.TypeByExtension("." + ext); t != "" {
+		return t
+	}
+	return "application/octet-stream"
+}
 func (s *Stream) Name() string        { return s.mf.Title + "." + s.format }
 func (s *Stream) ModTime() time.Time  { return s.mf.UpdatedAt }
 func (s *Stream) EstimatedContentLength() int {
@@ -329,9 +359,9 @@ func newBurstResponseWriter(w http.ResponseWriter) *burstResponseWriter {
 func (bw *burstResponseWriter) ReadFrom(r io.Reader) (int64, error) {
 	var totalWritten int64
 
-	// 1. Initial burst: immediately read and flush 2~4MB to prime player buffer
+	// 1. Initial burst: strictly read full 3MB (or up to file size) to prime player buffer
 	burstBuf := make([]byte, bw.burstSize)
-	n, err := io.ReadAtLeast(r, burstBuf, 1)
+	n, err := io.ReadFull(r, burstBuf)
 	if n > 0 {
 		wn, werr := bw.ResponseWriter.Write(burstBuf[:n])
 		totalWritten += int64(wn)
@@ -349,8 +379,8 @@ func (bw *burstResponseWriter) ReadFrom(r io.Reader) (int64, error) {
 		return totalWritten, err
 	}
 
-	// 2. High-speed raw streaming in 128KB chunks with flush
-	chunkBuf := make([]byte, bw.chunkSize)
+	// 2. High-speed raw streaming in 256KB chunks for smooth sustained throughput
+	chunkBuf := make([]byte, 256*1024)
 	for {
 		rn, rerr := r.Read(chunkBuf)
 		if rn > 0 {

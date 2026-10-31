@@ -64,6 +64,12 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		})
 	})
 
+	r.Get("/output/status", func(w http.ResponseWriter, r *http.Request) {
+		status := mgr.GetNowPlaying()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(status)
+	})
+
 	r.Post("/output/device", func(w http.ResponseWriter, r *http.Request) {
 		var req selectDeviceRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

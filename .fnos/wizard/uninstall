@@ -1,0 +1,25 @@
+[{
+  "stepTitle": "卸载 Navidrome",
+  "items": [
+    {
+      "type": "tips",
+      "helpText": "请选择是否在卸载时清除 Navidrome 生成的应用数据（数据库、缓存等）。"
+    },
+    {
+      "type": "radio",
+      "field": "wizard_delete_data",
+      "label": "仅卸载套件，保留应用数据以备将来重新安装。",
+      "initValue": "false",
+      "options": [
+        {
+          "label": "保留应用数据（数据库与配置保留）",
+          "value": "false"
+        },
+        {
+          "label": "清除所有套件生成的数据文件（不可恢复，不会删除您的音乐原文件）",
+          "value": "true"
+        }
+      ]
+    }
+  ]
+}]

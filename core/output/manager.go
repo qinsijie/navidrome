@@ -35,6 +35,7 @@ type NowPlayingInfo struct {
 	Track      TrackMetadata `json:"track"`
 	State      string        `json:"state"` // playing, paused, stopped
 	TimeOffset float64       `json:"timeOffset"`
+	StartedAt  int64         `json:"startedAt,omitempty"`
 }
 
 type Manager struct {
@@ -50,6 +51,7 @@ type Manager struct {
 	currentTrack      TrackMetadata
 	playbackState     string
 	currentTimeOffset float64
+	playbackStartTime int64
 }
 
 func GetManager() *Manager {
@@ -470,11 +472,17 @@ func (m *Manager) DeleteDLNA(deviceID string) {
 func (m *Manager) GetNowPlaying() NowPlayingInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	offset := m.currentTimeOffset
+	if m.playbackState == "playing" && m.playbackStartTime > 0 {
+		elapsed := float64(time.Now().UnixMilli()-m.playbackStartTime) / 1000.0
+		offset += elapsed
+	}
 	return NowPlayingInfo{
 		DeviceID:   m.activeDevID,
 		Track:      m.currentTrack,
 		State:      m.playbackState,
-		TimeOffset: m.currentTimeOffset,
+		TimeOffset: offset,
+		StartedAt:  m.playbackStartTime,
 	}
 }
 
@@ -483,6 +491,7 @@ func (m *Manager) PlayStream(ctx context.Context, streamURL string, meta TrackMe
 	m.currentTrack = meta
 	m.playbackState = "playing"
 	m.currentTimeOffset = timeOffset
+	m.playbackStartTime = time.Now().UnixMilli()
 	activeID := m.activeDevID
 	hqCfg := m.hqConfig
 	m.mu.Unlock()
@@ -517,11 +526,19 @@ func (m *Manager) PlayStream(ctx context.Context, streamURL string, meta TrackMe
 
 func (m *Manager) ControlPlayback(ctx context.Context, action string, timeOffset float64, volume int) error {
 	m.mu.Lock()
-	if action == "play" || action == "pause" || action == "stop" {
+	if action == "play" {
+		m.playbackState = "playing"
+		m.playbackStartTime = time.Now().UnixMilli()
+	} else if action == "pause" || action == "stop" {
+		if m.playbackState == "playing" && m.playbackStartTime > 0 {
+			m.currentTimeOffset += float64(time.Now().UnixMilli()-m.playbackStartTime) / 1000.0
+		}
 		m.playbackState = action
+		m.playbackStartTime = 0
 	}
 	if action == "seek" {
 		m.currentTimeOffset = timeOffset
+		m.playbackStartTime = time.Now().UnixMilli()
 	}
 	activeID := m.activeDevID
 	hqCfg := m.hqConfig
