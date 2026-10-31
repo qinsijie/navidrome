@@ -38,35 +38,53 @@ jobs:
 
       - name: Build Navidrome Binary
         run: |
-          mkdir -p build_pkg/app
+          mkdir -p build_pkg/app_release build_pkg/app_debug
           PKG_VER=$(grep -E '^[[:space:]]*version[[:space:]]*=' .fnos/manifest | awk -F'=' '{gsub(/[[:space:]]/, "", $2); print $2}')
-          echo "Building Navidrome v${PKG_VER}..."
+          echo "Building Navidrome Release v${PKG_VER}..."
           go build -tags=netgo,sqlite_fts5 \
             -ldflags="-s -w -X github.com/navidrome/navidrome/consts.gitSha=${{ github.sha }} -X github.com/navidrome/navidrome/consts.gitTag=v${PKG_VER}" \
-            -o build_pkg/app/navidrome .
-          chmod +x build_pkg/app/navidrome
+            -o build_pkg/app_release/navidrome .
+          chmod +x build_pkg/app_release/navidrome
+
+          echo "Building Navidrome Debug (with stream_debug) v${PKG_VER}..."
+          go build -tags=netgo,sqlite_fts5,stream_debug \
+            -ldflags="-s -w -X github.com/navidrome/navidrome/consts.gitSha=${{ github.sha }} -X github.com/navidrome/navidrome/consts.gitTag=v${PKG_VER}" \
+            -o build_pkg/app_debug/navidrome .
+          chmod +x build_pkg/app_debug/navidrome
 
       - name: Create FPK Package (Official fnpack format)
         run: |
           curl -sL https://raw.githubusercontent.com/boater-man/FnDepot/main/fnpack-1.2.1-linux-amd64 -o /tmp/fnpack
           chmod +x /tmp/fnpack
-          /tmp/fnpack create navidrome_build --without-ui true
-          cp .fnos/logo.png navidrome_build/ICON_256.PNG
-          cp .fnos/logo.png navidrome_build/ICON.PNG
-          cp .fnos/manifest navidrome_build/manifest
-          sed -i 's|desktop_applaunchname = navidrome|desktop_applaunchname = navidrome.Application|' navidrome_build/manifest
-          cp -r .fnos/cmd/* navidrome_build/cmd/
-          chmod +x navidrome_build/cmd/*
-          mkdir -p navidrome_build/wizard
-          cp -r .fnos/wizard/* navidrome_build/wizard/
+          PKG_VER=$(grep -E '^[[:space:]]*version[[:space:]]*=' .fnos/manifest | awk -F'=' '{gsub(/[[:space:]]/, "", $2); print $2}')
+          echo "Packaging version: $PKG_VER"
 
-          mkdir -p navidrome_build/app/app navidrome_build/app/config navidrome_build/app/ui/images
-          cp build_pkg/app/navidrome navidrome_build/app/app/
-          chmod +x navidrome_build/app/app/navidrome
-          cp .fnos/config/navidrome.toml navidrome_build/app/config/
-          cp .fnos/config/config.json navidrome_build/app/config/
+          pack_fpk() {
+            local mode=$1
+            local outname=$2
+            local workdir="navidrome_build_${mode}"
+            rm -rf "${workdir}"
+            /tmp/fnpack create "${workdir}" --without-ui true
+            cp .fnos/logo.png "${workdir}/ICON_256.PNG"
+            cp .fnos/logo.png "${workdir}/ICON.PNG"
+            cp .fnos/manifest "${workdir}/manifest"
+            sed -i 's|desktop_applaunchname = navidrome|desktop_applaunchname = navidrome.Application|' "${workdir}/manifest"
+            if [ "${mode}" = "debug" ]; then
+              sed -i 's|display_name = Navidrome|display_name = Navidrome (Debug)|' "${workdir}/manifest"
+              sed -i 's|description = .*|description = Navidrome Music Server (Debug Edition with Stream Diagnostics)|' "${workdir}/manifest"
+            fi
+            cp -r .fnos/cmd/* "${workdir}/cmd/"
+            chmod +x "${workdir}/cmd/"*
+            mkdir -p "${workdir}/wizard"
+            cp -r .fnos/wizard/* "${workdir}/wizard/"
 
-          cat <<EOF > navidrome_build/app/ui/config
+            mkdir -p "${workdir}/app/app" "${workdir}/app/config" "${workdir}/app/ui/images"
+            cp "build_pkg/app_${mode}/navidrome" "${workdir}/app/app/navidrome"
+            chmod +x "${workdir}/app/app/navidrome"
+            cp .fnos/config/navidrome.toml "${workdir}/app/config/"
+            cp .fnos/config/config.json "${workdir}/app/config/"
+
+            cat <<EOF > "${workdir}/app/ui/config"
           {
             ".url": {
               "navidrome.Application": {
@@ -81,16 +99,22 @@ jobs:
             }
           }
           EOF
-          if [ -d .fnos/ui/images ]; then
-            cp .fnos/ui/images/* navidrome_build/app/ui/images/
-          fi
+            if [ -d .fnos/ui/images ]; then
+              cp .fnos/ui/images/* "${workdir}/app/ui/images/"
+            fi
 
-          cd navidrome_build
-          /tmp/fnpack build
-          PKG_VER=$(grep -E '^[[:space:]]*version[[:space:]]*=' manifest | awk -F'=' '{gsub(/[[:space:]]/, "", $2); print $2}')
-          echo "Packaging version: $PKG_VER"
-          cp navidrome.fpk "../navidrome-x86_64-v${PKG_VER}.fpk"
-          cd ..
+            cd "${workdir}"
+            /tmp/fnpack build
+            cp navidrome.fpk "../${outname}"
+            cd ..
+          }
+
+          echo "=== Packaging Release FPK ==="
+          pack_fpk "release" "navidrome-x86_64-v${PKG_VER}.fpk"
+
+          echo "=== Packaging Debug FPK ==="
+          pack_fpk "debug" "navidrome-x86_64-v${PKG_VER}-debug.fpk"
+
           ls -lh navidrome-x86_64-v*.fpk
 
       - name: Upload FPK Artifact

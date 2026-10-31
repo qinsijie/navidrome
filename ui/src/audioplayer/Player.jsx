@@ -180,9 +180,10 @@ const Player = () => {
     }
   }, [])
 
+  const virtualSecRef = useRef(0)
   const remoteProgressRef = useRef({
-    timeOffset: 0,
-    startedAt: 0,
+    baseSec: 0,
+    baseClientTime: 0,
     playing: false,
     duration: 0,
     trackId: null,
@@ -194,6 +195,17 @@ const Player = () => {
       if (activeOutputDevice !== 'local') {
         audioInstance.muted = true
         audioInstance.pause()
+        try {
+          Object.defineProperty(audioInstance, 'currentTime', {
+            get: () => virtualSecRef.current,
+            set: (val) => {
+              virtualSecRef.current = val
+              remoteProgressRef.current.baseSec = val
+              remoteProgressRef.current.baseClientTime = Date.now()
+            },
+            configurable: true,
+          })
+        } catch (e) {}
       } else {
         try {
           delete audioInstance.currentTime
@@ -238,10 +250,10 @@ const Player = () => {
           .then(({ json }) => {
             if (json) {
               remoteProgressRef.current = {
-                timeOffset: json.timeOffset || 0,
-                startedAt: json.startedAt || 0,
+                baseSec: Number(json.timeOffset) || 0,
+                baseClientTime: Date.now(),
                 playing: json.state === 'playing',
-                duration: json.track?.duration || 0,
+                duration: Number(json.track?.duration) || 0,
                 trackId: json.track?.trackId || null,
                 currentIndex: json.currentIndex ?? -1,
               }
@@ -274,28 +286,48 @@ const Player = () => {
     activeOutputDevice !== 'local' ? 2000 : null,
   )
 
-  // Drive visual progress bar and time label forward smoothly every second
+  // Drive visual progress bar and time label forward smoothly every 500ms
   useInterval(
     () => {
-      if (activeOutputDevice !== 'local' && remoteProgressRef.current.playing) {
-        const info = remoteProgressRef.current
-        const now = Date.now()
-        const elapsed = info.startedAt > 0 ? (now - info.startedAt) / 1000 : 0
-        const currentSec = Math.max(0, info.timeOffset + elapsed)
+      if (activeOutputDevice !== 'local') {
+        const clock = remoteProgressRef.current
+        let currentSec = clock.baseSec
+        if (clock.playing && clock.baseClientTime > 0) {
+          currentSec += Math.max(0, (Date.now() - clock.baseClientTime) / 1000)
+        }
+        if (clock.duration > 0 && currentSec > clock.duration) {
+          currentSec = clock.duration
+        }
+
+        virtualSecRef.current = currentSec
 
         if (audioInstance) {
           try {
-            Object.defineProperty(audioInstance, 'currentTime', {
-              value: currentSec,
-              writable: true,
-              configurable: true,
-            })
             audioInstance.dispatchEvent(new Event('timeupdate'))
           } catch (e) {}
         }
+
+        const formatTime = (seconds) => {
+          const s = Math.floor(seconds || 0)
+          const m = Math.floor(s / 60)
+          const sec = s % 60
+          return `${m < 10 ? '0' + m : m}:${sec < 10 ? '0' + sec : sec}`
+        }
+        const timeEl = document.querySelector('.current-time')
+        if (timeEl && clock.duration > 0) {
+          timeEl.innerText = formatTime(currentSec)
+        }
+        const trackEl = document.querySelector('.progress-bar .rc-slider-track')
+        const handleEl = document.querySelector('.progress-bar .rc-slider-handle')
+        if (trackEl && handleEl && clock.duration > 0) {
+          const pct = Math.min(100, Math.max(0, (currentSec / clock.duration) * 100))
+          trackEl.style.width = `${pct}%`
+          handleEl.style.left = `${pct}%`
+          handleEl.setAttribute('aria-valuenow', Math.floor(currentSec))
+        }
       }
     },
-    activeOutputDevice !== 'local' ? 1000 : null,
+    activeOutputDevice !== 'local' ? 500 : null,
   )
 
   useEffect(() => {
@@ -506,9 +538,11 @@ const Player = () => {
           if (remoteProgressRef.current.currentIndex !== playIndex) {
             remoteProgressRef.current.currentIndex = playIndex
             remoteProgressRef.current.trackId = targetTrack.trackId
-            remoteProgressRef.current.timeOffset = 0
-            remoteProgressRef.current.startedAt = Date.now()
+            remoteProgressRef.current.baseSec = 0
+            remoteProgressRef.current.baseClientTime = Date.now()
+            remoteProgressRef.current.duration = targetTrack.duration || 0
             remoteProgressRef.current.playing = true
+            virtualSecRef.current = 0
 
             httpClient('/api/output/control', {
               method: 'POST',
@@ -545,9 +579,11 @@ const Player = () => {
         ) {
           remoteProgressRef.current.currentIndex = targetIndex
           remoteProgressRef.current.trackId = info.trackId
-          remoteProgressRef.current.timeOffset = 0
-          remoteProgressRef.current.startedAt = Date.now()
+          remoteProgressRef.current.baseSec = 0
+          remoteProgressRef.current.baseClientTime = Date.now()
+          remoteProgressRef.current.duration = info.duration || 0
           remoteProgressRef.current.playing = true
+          virtualSecRef.current = 0
           httpClient('/api/output/control', {
             method: 'POST',
             body: JSON.stringify({ action: 'jump', index: targetIndex }),
@@ -555,7 +591,7 @@ const Player = () => {
         } else {
           if (!remoteProgressRef.current.playing) {
             remoteProgressRef.current.playing = true
-            remoteProgressRef.current.startedAt = Date.now()
+            remoteProgressRef.current.baseClientTime = Date.now()
             httpClient('/api/output/control', {
               method: 'POST',
               body: JSON.stringify({ action: 'play' }),
@@ -624,6 +660,11 @@ const Player = () => {
       // the pause event is a synthetic browser power-saving throttling event, NOT a user intent!
       // Do NOT send pause to remote hardware in background!
       if (activeOutputDeviceRef.current !== 'local' && !info.isPlaceholder) {
+        const elapsed = remoteProgressRef.current.baseClientTime > 0
+          ? (Date.now() - remoteProgressRef.current.baseClientTime) / 1000
+          : 0
+        remoteProgressRef.current.baseSec += Math.max(0, elapsed)
+        remoteProgressRef.current.baseClientTime = Date.now()
         remoteProgressRef.current.playing = false
         if (!document.hidden && !isHiddenRef.current) {
           httpClient('/api/output/control', {
@@ -805,11 +846,15 @@ const Player = () => {
       if (timer) clearTimeout(timer)
       timer = setTimeout(flush, 250)
       if (activeOutputDeviceRef.current !== 'local' && audioInstance) {
+        const seekTarget = audioInstance.currentTime || 0
+        remoteProgressRef.current.baseSec = seekTarget
+        remoteProgressRef.current.baseClientTime = Date.now()
+        virtualSecRef.current = seekTarget
         httpClient('/api/output/control', {
           method: 'POST',
           body: JSON.stringify({
             action: 'seek',
-            timeOffset: (audioInstance.currentTime && audioInstance.currentTime >= 1.0) ? audioInstance.currentTime : 0,
+            timeOffset: seekTarget >= 1.0 ? seekTarget : 0,
           }),
         }).catch(() => {})
       }

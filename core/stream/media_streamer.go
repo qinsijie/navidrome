@@ -363,6 +363,7 @@ func newBurstResponseWriter(w http.ResponseWriter) *burstResponseWriter {
 
 func (bw *burstResponseWriter) ReadFrom(r io.Reader) (int64, error) {
 	var totalWritten int64
+	startTime := time.Now()
 
 	// 1. Initial burst: strictly read full 3MB (or up to file size) to prime player buffer
 	burstBuf := make([]byte, bw.burstSize)
@@ -372,6 +373,9 @@ func (bw *burstResponseWriter) ReadFrom(r io.Reader) (int64, error) {
 		totalWritten += int64(wn)
 		if bw.flusher != nil {
 			bw.flusher.Flush()
+		}
+		if IsStreamDebug {
+			log.Info("Audio Stream Initial Burst Primed", "burstBytes", wn, "elapsedMs", time.Since(startTime).Milliseconds())
 		}
 		if werr != nil {
 			return totalWritten, werr
@@ -387,6 +391,11 @@ func (bw *burstResponseWriter) ReadFrom(r io.Reader) (int64, error) {
 	// 2. Smooth sustained throughput via standard streaming without artificial Flush() interruptions
 	written, err := io.Copy(bw.ResponseWriter, r)
 	totalWritten += written
+
+	if IsStreamDebug {
+		log.Info("Audio Stream Completed", "totalBytes", totalWritten, "durationSec", time.Since(startTime).Seconds(), "err", err)
+	}
+
 	return totalWritten, err
 }
 

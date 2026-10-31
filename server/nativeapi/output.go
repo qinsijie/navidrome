@@ -120,6 +120,30 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Content-Duration", strconv.FormatFloat(float64(mf.Duration), 'G', -1, 32))
 
+		if stream.IsStreamDebug {
+			log.Info(r.Context(), "Audio Stream Request Received",
+				"trackId", id,
+				"filePath", filePath,
+				"fileSize", fi.Size(),
+				"mimeType", mimeType,
+				"rangeHeader", r.Header.Get("Range"),
+				"method", r.Method,
+				"remoteAddr", r.RemoteAddr,
+				"isRawPassthrough", true,
+			)
+		} else {
+			log.Debug(r.Context(), "Audio Stream Request Received",
+				"trackId", id,
+				"filePath", filePath,
+				"fileSize", fi.Size(),
+				"mimeType", mimeType,
+				"rangeHeader", r.Header.Get("Range"),
+				"method", r.Method,
+				"remoteAddr", r.RemoteAddr,
+				"isRawPassthrough", true,
+			)
+		}
+
 		bw := stream.NewBurstResponseWriter(w)
 		http.ServeContent(bw, r, fi.Name(), fi.ModTime(), f)
 	}
