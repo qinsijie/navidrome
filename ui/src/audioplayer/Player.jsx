@@ -182,41 +182,72 @@ const Player = () => {
 
   useEffect(() => {
     if (audioInstance) {
-      audioInstance.muted = activeOutputDevice !== 'local'
+      if (activeOutputDevice !== 'local') {
+        audioInstance.muted = true
+        audioInstance.pause()
+        if (audioInstance.src) {
+          audioInstance.removeAttribute('src')
+          audioInstance.load()
+        }
+      } else {
+        audioInstance.muted = false
+      }
     }
   }, [audioInstance, activeOutputDevice])
 
+  const lastSyncedQueueKeyRef = useRef('')
   useEffect(() => {
-    if (activeOutputDevice !== 'local') {
-      if (audioInstance && !audioInstance.paused && currentTrackIdRef.current) {
-        const current = playerStateRef.current?.current || {}
-        const rawStreamUrl =
-          !current.isRadio && current.trackId
-            ? subsonic.streamUrl(current.trackId, { format: 'raw' })
-            : typeof current.musicSrc === 'string'
-              ? current.musicSrc
-              : ''
-        if (rawStreamUrl) {
-          httpClient('/api/output/play', {
-            method: 'POST',
-            body: JSON.stringify({
-              trackId: current.trackId,
-              title: current.song?.title || current.name || '',
-              artist: current.song?.artist || current.singer || '',
-              album: current.song?.album || '',
-              streamUrl: rawStreamUrl,
-              timeOffset: (audioInstance.currentTime && audioInstance.currentTime >= 1.0) ? audioInstance.currentTime : 0,
-            }),
-          }).catch(() => {})
-        }
+    if (activeOutputDevice === 'local' || !playerState.queue.length) return
+    const currentIdx = playerState.playIndex ?? playerState.savedPlayIndex ?? 0
+    const queueKey = `${playerState.queue.map((t) => t.trackId).join(',')}_${currentIdx}`
+    if (lastSyncedQueueKeyRef.current === queueKey) return
+    lastSyncedQueueKeyRef.current = queueKey
+
+    const payloadTracks = playerState.queue.map((item) => ({
+      trackId: item.trackId,
+      title: item.song?.title || item.name || '',
+      artist: item.song?.artist || item.singer || '',
+      album: item.song?.album || '',
+      duration: item.duration || item.song?.duration || 0,
+      streamUrl: `/api/output/stream/${item.trackId}`,
+    }))
+
+    httpClient('/api/output/queue', {
+      method: 'POST',
+      body: JSON.stringify({
+        tracks: payloadTracks,
+        startIndex: currentIdx,
+        timeOffset: (audioInstance?.currentTime && audioInstance.currentTime >= 1.0) ? audioInstance.currentTime : 0,
+      }),
+    }).catch(() => {})
+  }, [activeOutputDevice, playerState.queue, playerState.playIndex, playerState.clear])
+
+  useInterval(
+    () => {
+      if (activeOutputDevice !== 'local') {
+        httpClient('/api/output/status')
+          .then(({ json }) => {
+            if (json && json.track && json.track.trackId) {
+              if (currentTrackIdRef.current !== json.track.trackId) {
+                currentTrackIdRef.current = json.track.trackId
+                setCurrentTrackId(json.track.trackId)
+              }
+            }
+          })
+          .catch(() => {})
       }
-    } else {
+    },
+    activeOutputDevice !== 'local' ? 3000 : null,
+  )
+
+  useEffect(() => {
+    if (activeOutputDevice === 'local') {
       httpClient('/api/output/control', {
         method: 'POST',
         body: JSON.stringify({ action: 'stop' }),
       }).catch(() => {})
     }
-  }, [activeOutputDevice, audioInstance])
+  }, [activeOutputDevice])
 
   const visible = authenticated
   const placeholderTracks = useMemo(
@@ -407,35 +438,20 @@ const Player = () => {
       dispatch(currentPlaying(info))
       if (info.isPlaceholder) return
 
-      // Real remote streaming dispatch (use direct raw stream URL to support HQPlayer/DLNA HTTP Range requests)
+      // Real remote streaming dispatch: keep local audio DOM powered off and send play to server session
       if (activeOutputDeviceRef.current !== 'local') {
-        // If the same track is already playing and tab just woke up, don't restart it
-        if (currentTrackIdRef.current === info.trackId) {
-          httpClient('/api/output/control', {
-            method: 'POST',
-            body: JSON.stringify({ action: 'play' }),
-          }).catch(() => {})
-        } else {
-          const rawStreamUrl =
-            !info.isRadio && info.trackId
-              ? subsonic.streamUrl(info.trackId, { format: 'raw' })
-              : typeof info.musicSrc === 'string'
-                ? info.musicSrc
-                : ''
-          if (rawStreamUrl) {
-            httpClient('/api/output/play', {
-              method: 'POST',
-              body: JSON.stringify({
-                trackId: info.trackId,
-                title: info.song?.title || info.name || '',
-                artist: info.song?.artist || info.singer || '',
-                album: info.song?.album || '',
-                streamUrl: rawStreamUrl,
-                timeOffset: (info.currentTime && info.currentTime >= 1.0) ? info.currentTime : 0,
-              }),
-            }).catch(() => {})
+        if (audioInstance) {
+          audioInstance.muted = true
+          audioInstance.pause()
+          if (audioInstance.src) {
+            audioInstance.removeAttribute('src')
+            audioInstance.load()
           }
         }
+        httpClient('/api/output/control', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'play' }),
+        }).catch(() => {})
       }
 
       if (info.duration) {

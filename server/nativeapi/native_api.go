@@ -61,6 +61,7 @@ func (api *Router) routes() http.Handler {
 
 	// Public
 	rx(r, "/translation", newTranslationRepository(), false)
+	api.addPublicOutputRoutes(r)
 
 	// Protected
 	r.Group(func(r chi.Router) {

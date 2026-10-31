@@ -31,11 +31,14 @@ type StoredState struct {
 }
 
 type NowPlayingInfo struct {
-	DeviceID   string        `json:"deviceId"`
-	Track      TrackMetadata `json:"track"`
-	State      string        `json:"state"` // playing, paused, stopped
-	TimeOffset float64       `json:"timeOffset"`
-	StartedAt  int64         `json:"startedAt,omitempty"`
+	DeviceID     string          `json:"deviceId"`
+	Track        TrackMetadata   `json:"track"`
+	State        string          `json:"state"` // playing, paused, stopped
+	TimeOffset   float64         `json:"timeOffset"`
+	StartedAt    int64           `json:"startedAt,omitempty"`
+	Queue        []TrackMetadata `json:"queue,omitempty"`
+	CurrentIndex int             `json:"currentIndex"`
+	Epoch        uint64          `json:"epoch"`
 }
 
 type Manager struct {
@@ -52,6 +55,7 @@ type Manager struct {
 	playbackState     string
 	currentTimeOffset float64
 	playbackStartTime int64
+	session           *PlayerSession
 }
 
 func GetManager() *Manager {
@@ -70,10 +74,16 @@ func GetManager() *Manager {
 				Enabled: false,
 			},
 		}
+		managerInstance.session = NewPlayerSession(managerInstance, string(DeviceTypeLocal))
 		managerInstance.loadState()
+		managerInstance.session.SetDeviceID(managerInstance.activeDevID)
 		go managerInstance.refreshDevices(context.Background())
 	})
 	return managerInstance
+}
+
+func (m *Manager) GetSession() *PlayerSession {
+	return m.session
 }
 
 func (m *Manager) stateFilePath() string {
@@ -269,6 +279,9 @@ func (m *Manager) SetActiveDevice(deviceID string) error {
 	}
 
 	m.activeDevID = deviceID
+	if m.session != nil {
+		m.session.SetDeviceID(deviceID)
+	}
 	log.Info(fmt.Sprintf("Audio output destination switched to: %s", deviceID))
 	go m.saveState()
 	return nil
@@ -471,6 +484,14 @@ func (m *Manager) DeleteDLNA(deviceID string) {
 
 func (m *Manager) GetNowPlaying() NowPlayingInfo {
 	m.mu.RLock()
+	activeID := m.activeDevID
+	m.mu.RUnlock()
+
+	if activeID != string(DeviceTypeLocal) && m.session != nil {
+		return m.session.GetStatus()
+	}
+
+	m.mu.RLock()
 	defer m.mu.RUnlock()
 	offset := m.currentTimeOffset
 	if m.playbackState == "playing" && m.playbackStartTime > 0 {
@@ -487,32 +508,39 @@ func (m *Manager) GetNowPlaying() NowPlayingInfo {
 }
 
 func (m *Manager) PlayStream(ctx context.Context, streamURL string, meta TrackMetadata, timeOffset float64) error {
+	meta.Stream = streamURL
+	if m.GetActiveDevice() != string(DeviceTypeLocal) && m.session != nil {
+		return m.session.SetQueue([]TrackMetadata{meta}, 0, timeOffset)
+	}
+	return m.playTrackOnDevice(ctx, m.GetActiveDevice(), meta, timeOffset)
+}
+
+func (m *Manager) playTrackOnDevice(ctx context.Context, deviceID string, meta TrackMetadata, timeOffset float64) error {
 	m.mu.Lock()
 	m.currentTrack = meta
 	m.playbackState = "playing"
 	m.currentTimeOffset = timeOffset
 	m.playbackStartTime = time.Now().UnixMilli()
-	activeID := m.activeDevID
 	hqCfg := m.hqConfig
 	m.mu.Unlock()
 
-	if activeID == "" || activeID == string(DeviceTypeLocal) {
+	if deviceID == "" || deviceID == string(DeviceTypeLocal) {
 		return nil
 	}
 
-	if activeID == "hqplayer" {
-		return m.hqClient.PlayRawStream(ctx, hqCfg, streamURL, meta, timeOffset)
+	if deviceID == "hqplayer" {
+		return m.hqClient.PlayRawStream(ctx, hqCfg, meta.Stream, meta, timeOffset)
 	}
 
 	m.dlnaScanner.mu.RLock()
-	dev, ok := m.dlnaScanner.devices[activeID]
+	dev, ok := m.dlnaScanner.devices[deviceID]
 	m.dlnaScanner.mu.RUnlock()
 
 	if !ok || dev.ControlURL == "" {
-		return fmt.Errorf("DLNA device %s not found or offline", activeID)
+		return fmt.Errorf("DLNA device %s not found or offline", deviceID)
 	}
 
-	if err := SetAVTransportURI(ctx, m.httpClient, dev.ControlURL, streamURL, meta.Title, meta.Artist); err != nil {
+	if err := SetAVTransportURI(ctx, m.httpClient, dev.ControlURL, meta.Stream, meta.Title, meta.Artist); err != nil {
 		return fmt.Errorf("set av transport uri: %w", err)
 	}
 	if err := Play(ctx, m.httpClient, dev.ControlURL); err != nil {
@@ -525,6 +553,29 @@ func (m *Manager) PlayStream(ctx context.Context, streamURL string, meta TrackMe
 }
 
 func (m *Manager) ControlPlayback(ctx context.Context, action string, timeOffset float64, volume int) error {
+	activeID := m.GetActiveDevice()
+	if activeID != string(DeviceTypeLocal) && m.session != nil {
+		switch action {
+		case "play":
+			return m.session.Resume()
+		case "pause":
+			return m.session.Pause()
+		case "stop":
+			return m.session.Stop()
+		case "next":
+			return m.session.Next(true)
+		case "prev":
+			return m.session.Prev()
+		case "seek":
+			return m.session.Seek(timeOffset)
+		case "volume":
+			return m.controlDevice(ctx, activeID, "volume", 0, volume)
+		}
+	}
+	return m.controlDevice(ctx, activeID, action, timeOffset, volume)
+}
+
+func (m *Manager) controlDevice(ctx context.Context, deviceID string, action string, timeOffset float64, volume int) error {
 	m.mu.Lock()
 	if action == "play" {
 		m.playbackState = "playing"
@@ -540,20 +591,19 @@ func (m *Manager) ControlPlayback(ctx context.Context, action string, timeOffset
 		m.currentTimeOffset = timeOffset
 		m.playbackStartTime = time.Now().UnixMilli()
 	}
-	activeID := m.activeDevID
 	hqCfg := m.hqConfig
 	m.mu.Unlock()
 
-	if activeID == "" || activeID == string(DeviceTypeLocal) {
+	if deviceID == "" || deviceID == string(DeviceTypeLocal) {
 		return nil
 	}
 
-	if activeID == "hqplayer" {
+	if deviceID == "hqplayer" {
 		return m.hqClient.Control(ctx, hqCfg, action, timeOffset, volume)
 	}
 
 	m.dlnaScanner.mu.RLock()
-	dev, ok := m.dlnaScanner.devices[activeID]
+	dev, ok := m.dlnaScanner.devices[deviceID]
 	m.dlnaScanner.mu.RUnlock()
 
 	if !ok || dev.ControlURL == "" {
@@ -564,7 +614,6 @@ func (m *Manager) ControlPlayback(ctx context.Context, action string, timeOffset
 	case "play":
 		return Play(ctx, m.httpClient, dev.ControlURL)
 	case "pause", "stop":
-		// Map pause to UPnP AVTransport#Stop to avoid DLNA renderer 501/701 lockups and DAC FIFO underruns
 		return Stop(ctx, m.httpClient, dev.ControlURL)
 	case "seek":
 		return Seek(ctx, m.httpClient, dev.ControlURL, timeOffset)

@@ -21,9 +21,11 @@ type Device struct {
 }
 
 type TrackMetadata struct {
-	TrackID string `json:"trackId"`
-	Title   string `json:"title"`
-	Artist  string `json:"artist"`
-	Album   string `json:"album"`
-	Stream  string `json:"streamUrl"`
+	TrackID  string  `json:"trackId"`
+	Title    string  `json:"title"`
+	Artist   string  `json:"artist"`
+	Album    string  `json:"album"`
+	Stream   string  `json:"streamUrl"`
+	Duration float64 `json:"duration,omitempty"`
+	CoverURL string  `json:"coverUrl,omitempty"`
 }

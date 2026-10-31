@@ -2,11 +2,16 @@ package nativeapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/core/output"
+	"github.com/navidrome/navidrome/core/stream"
 	"github.com/navidrome/navidrome/log"
 )
 
@@ -31,7 +36,7 @@ type addDLNARequest struct {
 }
 
 type playbackControlRequest struct {
-	Action     string  `json:"action"` // play, pause, stop, seek, volume
+	Action     string  `json:"action"` // play, pause, stop, next, prev, seek, volume
 	TimeOffset float64 `json:"timeOffset,omitempty"`
 	Volume     int     `json:"volume,omitempty"` // 0-100
 }
@@ -42,11 +47,84 @@ type playStreamRequest struct {
 	Artist     string  `json:"artist"`
 	Album      string  `json:"album"`
 	StreamURL  string  `json:"streamUrl"`
+	Duration   float64 `json:"duration,omitempty"`
 	TimeOffset float64 `json:"timeOffset,omitempty"`
+}
+
+type setQueueRequest struct {
+	Tracks     []output.TrackMetadata `json:"tracks"`
+	StartIndex int                    `json:"startIndex"`
+	TimeOffset float64                `json:"timeOffset,omitempty"`
 }
 
 func resolveOutboundURL(r *http.Request, rawURL string, targetHost string) string {
 	return output.ResolveOutboundURL(r, rawURL, conf.Server.Port, targetHost)
+}
+
+// addPublicOutputRoutes mounts unauthenticated endpoints for remote DACs / players (HQPlayer, DLNA)
+// to fetch raw physical audio streams without token expiration limitations.
+func (api *Router) addPublicOutputRoutes(r chi.Router) {
+	streamHandler := func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if id == "" {
+			http.Error(w, "missing track id", http.StatusBadRequest)
+			return
+		}
+
+		mf, err := api.ds.MediaFile().Get(r.Context(), id)
+		if err != nil || mf == nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		filePath := mf.AbsolutePath()
+		f, err := os.Open(filePath)
+		if err != nil {
+			http.Error(w, "file not found: "+err.Error(), http.StatusNotFound)
+			return
+		}
+		defer f.Close()
+
+		fi, err := f.Stat()
+		if err != nil {
+			http.Error(w, "stat error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		ext := strings.ToLower(strings.TrimPrefix(mf.Suffix, "."))
+		mimeType := "audio/flac"
+		switch ext {
+		case "flac":
+			mimeType = "audio/flac"
+		case "wav", "wave":
+			mimeType = "audio/wav"
+		case "dsf":
+			mimeType = "audio/dsf"
+		case "dff":
+			mimeType = "audio/x-dff"
+		case "ape":
+			mimeType = "audio/x-ape"
+		case "wv":
+			mimeType = "audio/x-wavpack"
+		case "mp3":
+			mimeType = "audio/mpeg"
+		case "m4a", "aac":
+			mimeType = "audio/mp4"
+		case "ogg", "oga":
+			mimeType = "audio/ogg"
+		}
+
+		w.Header().Set("Content-Type", mimeType)
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Content-Duration", strconv.FormatFloat(float64(mf.Duration), 'G', -1, 32))
+
+		bw := stream.NewBurstResponseWriter(w)
+		http.ServeContent(bw, r, fi.Name(), fi.ModTime(), f)
+	}
+
+	r.Get("/output/stream/{id}", streamHandler)
+	r.Head("/output/stream/{id}", streamHandler)
 }
 
 func (api *Router) addOutputRoutes(r chi.Router) {
@@ -168,6 +246,53 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
+	r.Post("/output/queue", func(w http.ResponseWriter, r *http.Request) {
+		var req setQueueRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		targetHost := mgr.GetActiveTargetHost()
+		outboundIP := output.DetectOutboundIP(targetHost)
+		port := conf.Server.Port
+
+		for i := range req.Tracks {
+			t := &req.Tracks[i]
+			if t.Stream == "" && t.TrackID != "" {
+				t.Stream = fmt.Sprintf("http://%s:%d/api/output/stream/%s", outboundIP, port, t.TrackID)
+			} else if strings.HasPrefix(t.Stream, "/") {
+				t.Stream = fmt.Sprintf("http://%s:%d%s", outboundIP, port, t.Stream)
+			}
+			if t.Duration <= 0 && t.TrackID != "" {
+				if mf, err := api.ds.MediaFile().Get(r.Context(), t.TrackID); err == nil && mf != nil {
+					t.Duration = float64(mf.Duration)
+					if t.Title == "" {
+						t.Title = mf.Title
+					}
+					if t.Artist == "" {
+						t.Artist = mf.Artist
+					}
+					if t.Album == "" {
+						t.Album = mf.Album
+					}
+				}
+			}
+		}
+
+		if err := mgr.GetSession().SetQueue(req.Tracks, req.StartIndex, req.TimeOffset); err != nil {
+			log.Error(r.Context(), "Failed to set output queue", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":     "ok",
+			"nowPlaying": mgr.GetNowPlaying(),
+		})
+	})
+
 	r.Post("/output/play", func(w http.ResponseWriter, r *http.Request) {
 		var req playStreamRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -179,13 +304,36 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			req.TimeOffset = 0
 		}
 
+		if req.StreamURL == "" && req.TrackID != "" {
+			targetHost := mgr.GetActiveTargetHost()
+			outboundIP := output.DetectOutboundIP(targetHost)
+			req.StreamURL = fmt.Sprintf("http://%s:%d/api/output/stream/%s", outboundIP, conf.Server.Port, req.TrackID)
+		}
+
 		resolvedURL := resolveOutboundURL(r, req.StreamURL, mgr.GetActiveTargetHost())
+		duration := req.Duration
+		if duration <= 0 && req.TrackID != "" {
+			if mf, err := api.ds.MediaFile().Get(r.Context(), req.TrackID); err == nil && mf != nil {
+				duration = float64(mf.Duration)
+				if req.Title == "" {
+					req.Title = mf.Title
+				}
+				if req.Artist == "" {
+					req.Artist = mf.Artist
+				}
+				if req.Album == "" {
+					req.Album = mf.Album
+				}
+			}
+		}
+
 		meta := output.TrackMetadata{
-			TrackID: req.TrackID,
-			Title:   req.Title,
-			Artist:  req.Artist,
-			Album:   req.Album,
-			Stream:  resolvedURL,
+			TrackID:  req.TrackID,
+			Title:    req.Title,
+			Artist:   req.Artist,
+			Album:    req.Album,
+			Stream:   resolvedURL,
+			Duration: duration,
 		}
 		if err := mgr.PlayStream(r.Context(), resolvedURL, meta, req.TimeOffset); err != nil {
 			log.Error(r.Context(), "Failed to play stream on output device", err)
@@ -194,7 +342,7 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "nowPlaying": mgr.GetNowPlaying()})
 	})
 
 	r.Post("/output/control", func(w http.ResponseWriter, r *http.Request) {

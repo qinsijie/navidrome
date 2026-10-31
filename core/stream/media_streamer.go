@@ -347,6 +347,10 @@ type burstResponseWriter struct {
 	chunkSize int
 }
 
+func NewBurstResponseWriter(w http.ResponseWriter) http.ResponseWriter {
+	return newBurstResponseWriter(w)
+}
+
 func newBurstResponseWriter(w http.ResponseWriter) *burstResponseWriter {
 	flusher, _ := w.(http.Flusher)
 	return &burstResponseWriter{
