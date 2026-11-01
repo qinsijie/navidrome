@@ -194,7 +194,22 @@ const Player = () => {
     if (audioInstance) {
       if (activeOutputDevice !== 'local') {
         audioInstance.muted = true
-        audioInstance.pause()
+
+        // Intercept native play/pause so ReactJkMusicPlayer operates virtually without firing hardware DOM audio
+        if (!audioInstance._origPlay) {
+          audioInstance._origPlay = audioInstance.play.bind(audioInstance)
+          audioInstance._origPause = audioInstance.pause.bind(audioInstance)
+        }
+
+        audioInstance.play = () => {
+          audioInstance.dispatchEvent(new Event('play'))
+          return Promise.resolve()
+        }
+
+        audioInstance.pause = () => {
+          audioInstance.dispatchEvent(new Event('pause'))
+        }
+
         try {
           Object.defineProperty(audioInstance, 'currentTime', {
             get: () => virtualSecRef.current,
@@ -206,7 +221,15 @@ const Player = () => {
             configurable: true,
           })
         } catch (e) {}
+
+        try {
+          audioInstance._origPause()
+        } catch (e) {}
       } else {
+        if (audioInstance._origPlay) {
+          audioInstance.play = audioInstance._origPlay
+          audioInstance.pause = audioInstance._origPause
+        }
         try {
           delete audioInstance.currentTime
         } catch (e) {}
@@ -249,13 +272,21 @@ const Player = () => {
         httpClient('/api/output/status')
           .then(({ json }) => {
             if (json) {
-              remoteProgressRef.current = {
-                baseSec: Number(json.timeOffset) || 0,
-                baseClientTime: Date.now(),
-                playing: json.state === 'playing',
-                duration: Number(json.track?.duration) || 0,
-                trackId: json.track?.trackId || null,
-                currentIndex: json.currentIndex ?? -1,
+              const isServerPlaying = json.state === 'playing'
+              remoteProgressRef.current.baseSec = Number(json.timeOffset) || 0
+              remoteProgressRef.current.baseClientTime = Date.now()
+              remoteProgressRef.current.playing = isServerPlaying
+              remoteProgressRef.current.duration = Number(json.track?.duration) || 0
+              remoteProgressRef.current.trackId = json.track?.trackId || null
+              remoteProgressRef.current.currentIndex = json.currentIndex ?? -1
+
+              // Synchronize play/pause button icon with server state
+              if (audioInstance) {
+                if (isServerPlaying) {
+                  audioInstance.dispatchEvent(new Event('play'))
+                } else {
+                  audioInstance.dispatchEvent(new Event('pause'))
+                }
               }
 
               // When server switches to another track, update Redux state so UI updates
@@ -272,6 +303,9 @@ const Player = () => {
                 dispatch(currentPlaying(newTrack))
                 currentTrackIdRef.current = newTrack.trackId
                 setCurrentTrackId(newTrack.trackId)
+                remoteProgressRef.current.baseSec = 0
+                remoteProgressRef.current.baseClientTime = Date.now()
+                virtualSecRef.current = 0
                 if (audioInstance && typeof audioInstance.playByIndex === 'function') {
                   try {
                     audioInstance.playByIndex(serverIdx)
@@ -313,17 +347,27 @@ const Player = () => {
           const sec = s % 60
           return `${m < 10 ? '0' + m : m}:${sec < 10 ? '0' + sec : sec}`
         }
-        const timeEl = document.querySelector('.current-time')
-        if (timeEl && clock.duration > 0) {
-          timeEl.innerText = formatTime(currentSec)
+        const timeEls = document.querySelectorAll('.current-time, .music-player-panel .current-time')
+        timeEls.forEach((el) => {
+          el.innerText = formatTime(currentSec)
+        })
+        const durEls = document.querySelectorAll('.duration, .music-player-panel .duration')
+        if (clock.duration > 0) {
+          durEls.forEach((el) => {
+            el.innerText = formatTime(clock.duration)
+          })
         }
-        const trackEl = document.querySelector('.progress-bar .rc-slider-track')
-        const handleEl = document.querySelector('.progress-bar .rc-slider-handle')
-        if (trackEl && handleEl && clock.duration > 0) {
+        const trackEls = document.querySelectorAll('.rc-slider-track, .progress-bar .rc-slider-track')
+        const handleEls = document.querySelectorAll('.rc-slider-handle, .progress-bar .rc-slider-handle')
+        if (clock.duration > 0) {
           const pct = Math.min(100, Math.max(0, (currentSec / clock.duration) * 100))
-          trackEl.style.width = `${pct}%`
-          handleEl.style.left = `${pct}%`
-          handleEl.setAttribute('aria-valuenow', Math.floor(currentSec))
+          trackEls.forEach((el) => {
+            el.style.width = `${pct}%`
+          })
+          handleEls.forEach((el) => {
+            el.style.left = `${pct}%`
+            el.setAttribute('aria-valuenow', Math.floor(currentSec))
+          })
         }
       }
     },
@@ -568,7 +612,6 @@ const Player = () => {
       if (activeOutputDeviceRef.current !== 'local') {
         if (audioInstance) {
           audioInstance.muted = true
-          audioInstance.pause()
         }
         const targetIndex = playerStateRef.current?.queue?.findIndex(
           (item) => item.trackId === info.trackId,
