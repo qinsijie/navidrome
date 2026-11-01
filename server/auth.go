@@ -48,12 +48,26 @@ func login(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// fnosLogin implements dual-track zero-click or one-click authentication for fnOS environments
+// fnosLogin implements secure reverse-proxy authentication for fnOS environments
 func fnosLogin(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		userRepo := ds.User()
 
+		// 1. Strict origin check: only trusted internal gateway / loopback (127.0.0.1 / ::1) is permitted
+		remoteHost, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			remoteHost = r.RemoteAddr
+		}
+		isLoopback := remoteHost == "127.0.0.1" || remoteHost == "::1" || remoteHost == "localhost"
+
+		if !isLoopback {
+			log.Warn(r, "fnosLogin rejected: request not from trusted loopback gateway", "remoteAddr", r.RemoteAddr)
+			_ = rest.RespondWithError(w, http.StatusUnauthorized, "fnOS SSO is only allowed from trusted local gateway")
+			return
+		}
+
+		// 2. Extract authenticated identity from trusted reverse proxy headers
 		candidateHeaders := []string{
 			"X-Fnos-User",
 			"X-Auth-User",
@@ -70,28 +84,16 @@ func fnosLogin(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 
-		var user *model.User
-		var err error
-		if username != "" {
-			user, err = userRepo.FindByUsernameWithPassword(ctx, username)
-			if err != nil {
-				log.Warn(r, "fnosLogin: user from header not found, falling back to default admin", "username", username)
-			}
+		if username == "" {
+			log.Warn(r, "fnosLogin rejected: missing fnOS user header from local gateway")
+			_ = rest.RespondWithError(w, http.StatusUnauthorized, "Missing fnOS user identity header")
+			return
 		}
 
-		// Fall back to primary admin or first existing user
-		if user == nil {
-			user, _ = userRepo.FindFirstAdmin(ctx)
-		}
-		if user == nil {
-			users, errUsers := userRepo.GetAll(ctx)
-			if errUsers == nil && len(users) > 0 {
-				user = &users[0]
-			}
-		}
-
-		if user == nil {
-			_ = rest.RespondWithJSON(w, http.StatusOK, map[string]any{"firstTime": true})
+		user, err := userRepo.FindByUsernameWithPassword(ctx, username)
+		if err != nil || user == nil {
+			log.Warn(r, "fnosLogin rejected: user not found", "username", username)
+			_ = rest.RespondWithError(w, http.StatusUnauthorized, fmt.Sprintf("User %q not found in Navidrome", username))
 			return
 		}
 

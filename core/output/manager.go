@@ -39,6 +39,7 @@ type NowPlayingInfo struct {
 	Queue        []TrackMetadata `json:"queue,omitempty"`
 	CurrentIndex int             `json:"currentIndex"`
 	Epoch        uint64          `json:"epoch"`
+	PlayMode     string          `json:"playMode,omitempty"`
 }
 
 type Manager struct {
@@ -51,6 +52,7 @@ type Manager struct {
 	hqConfig          HQPlayerConfig
 	httpClient        *http.Client
 	lastScan          time.Time
+	isScanning        sync.Mutex
 	currentTrack      TrackMetadata
 	playbackState     string
 	currentTimeOffset float64
@@ -162,6 +164,11 @@ func (m *Manager) Scan(ctx context.Context) {
 }
 
 func (m *Manager) refreshDevices(ctx context.Context) {
+	if !m.isScanning.TryLock() {
+		return // Scan already in progress, avoid duplicate UDP SSDP floods
+	}
+	defer m.isScanning.Unlock()
+
 	_, _ = m.dlnaScanner.Discover(ctx, 3*time.Second)
 	m.mu.Lock()
 	m.lastScan = time.Now()
@@ -510,7 +517,7 @@ func (m *Manager) GetNowPlaying() NowPlayingInfo {
 func (m *Manager) PlayStream(ctx context.Context, streamURL string, meta TrackMetadata, timeOffset float64) error {
 	meta.Stream = streamURL
 	if m.GetActiveDevice() != string(DeviceTypeLocal) && m.session != nil {
-		return m.session.SetQueue([]TrackMetadata{meta}, 0, timeOffset)
+		return m.session.SetQueue([]TrackMetadata{meta}, 0, timeOffset, "")
 	}
 	return m.playTrackOnDevice(ctx, m.GetActiveDevice(), meta, timeOffset)
 }
@@ -552,7 +559,7 @@ func (m *Manager) playTrackOnDevice(ctx context.Context, deviceID string, meta T
 	return nil
 }
 
-func (m *Manager) ControlPlaybackWithIndex(ctx context.Context, action string, index int, timeOffset float64, volume int) error {
+func (m *Manager) ControlPlaybackWithDetails(ctx context.Context, action string, index int, timeOffset float64, volume int, mode string) error {
 	activeID := m.GetActiveDevice()
 	if activeID != string(DeviceTypeLocal) && m.session != nil {
 		switch action {
@@ -572,9 +579,16 @@ func (m *Manager) ControlPlaybackWithIndex(ctx context.Context, action string, i
 			return m.session.Seek(timeOffset)
 		case "volume":
 			return m.controlDevice(ctx, activeID, "volume", 0, volume)
+		case "playMode":
+			m.session.SetPlayMode(mode)
+			return nil
 		}
 	}
 	return m.controlDevice(ctx, activeID, action, timeOffset, volume)
+}
+
+func (m *Manager) ControlPlaybackWithIndex(ctx context.Context, action string, index int, timeOffset float64, volume int) error {
+	return m.ControlPlaybackWithDetails(ctx, action, index, timeOffset, volume, "")
 }
 
 func (m *Manager) ControlPlayback(ctx context.Context, action string, timeOffset float64, volume int) error {

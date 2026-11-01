@@ -1,5 +1,0 @@
-#!/bin/bash
-mkdir -p /var/apps/navidrome/data
-chmod +x /var/apps/navidrome/service/* || true
-chmod +x /var/apps/navidrome/app/* || true
-exit 0

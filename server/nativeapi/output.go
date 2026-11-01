@@ -36,10 +36,11 @@ type addDLNARequest struct {
 }
 
 type playbackControlRequest struct {
-	Action     string  `json:"action"` // play, pause, stop, next, prev, jump, seek, volume
+	Action     string  `json:"action"` // play, pause, stop, next, prev, jump, seek, volume, playMode
 	Index      int     `json:"index,omitempty"`
 	TimeOffset float64 `json:"timeOffset,omitempty"`
 	Volume     int     `json:"volume,omitempty"` // 0-100
+	Mode       string  `json:"mode,omitempty"`
 }
 
 type playStreamRequest struct {
@@ -56,6 +57,7 @@ type setQueueRequest struct {
 	Tracks     []output.TrackMetadata `json:"tracks"`
 	StartIndex int                    `json:"startIndex"`
 	TimeOffset float64                `json:"timeOffset,omitempty"`
+	PlayMode   string                 `json:"playMode,omitempty"`
 }
 
 func resolveOutboundURL(r *http.Request, rawURL string, targetHost string) string {
@@ -305,7 +307,7 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			}
 		}
 
-		if err := mgr.GetSession().SetQueue(req.Tracks, req.StartIndex, req.TimeOffset); err != nil {
+		if err := mgr.GetSession().SetQueue(req.Tracks, req.StartIndex, req.TimeOffset, req.PlayMode); err != nil {
 			log.Error(r.Context(), "Failed to set output queue", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -379,7 +381,7 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		if req.Action == "seek" && req.TimeOffset < 1.0 {
 			req.TimeOffset = 0
 		}
-		if err := mgr.ControlPlaybackWithIndex(r.Context(), req.Action, req.Index, req.TimeOffset, req.Volume); err != nil {
+		if err := mgr.ControlPlaybackWithDetails(r.Context(), req.Action, req.Index, req.TimeOffset, req.Volume, req.Mode); err != nil {
 			log.Error(r.Context(), "Failed to control output device", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

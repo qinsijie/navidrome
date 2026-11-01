@@ -23,6 +23,7 @@ type PlayerSession struct {
 	epoch        uint64
 	startedAt    int64 // unix milli
 	timeOffset   float64
+	playMode     string // "order", "orderLoop", "singleLoop", "shufflePlay"
 	timer        *time.Timer
 }
 
@@ -33,6 +34,7 @@ func NewPlayerSession(mgr *Manager, deviceID string) *PlayerSession {
 		queue:        make([]TrackMetadata, 0),
 		currentIndex: -1,
 		state:        "stopped",
+		playMode:     "orderLoop",
 	}
 }
 
@@ -42,8 +44,39 @@ func (s *PlayerSession) SetDeviceID(deviceID string) {
 	s.deviceID = deviceID
 }
 
-func (s *PlayerSession) SetQueue(tracks []TrackMetadata, startIndex int, timeOffset float64) error {
+func (s *PlayerSession) SetPlayMode(mode string) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if mode != "" {
+		s.playMode = mode
+		log.Info(fmt.Sprintf("PlayerSession [%s]: Play mode updated to %s", s.deviceID, mode))
+	}
+}
+
+func (s *PlayerSession) SetQueue(tracks []TrackMetadata, startIndex int, timeOffset float64, playMode string) error {
+	s.mu.Lock()
+
+	if playMode != "" {
+		s.playMode = playMode
+	}
+
+	// P0 Guard: If current session is actively playing the same track at startIndex,
+	// only update upcoming queue in memory. DO NOT cancel timer, DO NOT increment epoch,
+	// and DO NOT send cut-off commands to remote DAC!
+	if s.state == "playing" && len(s.queue) > 0 && s.currentIndex >= 0 && s.currentIndex < len(s.queue) &&
+		startIndex >= 0 && startIndex < len(tracks) &&
+		s.queue[s.currentIndex].TrackID == tracks[startIndex].TrackID &&
+		tracks[startIndex].TrackID != "" {
+		s.queue = make([]TrackMetadata, len(tracks))
+		copy(s.queue, tracks)
+		s.currentIndex = startIndex
+		devID := s.deviceID
+		s.mu.Unlock()
+		log.Info(fmt.Sprintf("PlayerSession [%s]: Dynamically updated queue (%d tracks) without interrupting playback: %s",
+			devID, len(tracks), tracks[startIndex].Title))
+		return nil
+	}
+
 	s.cancelTimerLocked()
 	curEpoch := atomic.AddUint64(&s.epoch, 1)
 
@@ -258,17 +291,11 @@ func (s *PlayerSession) armTimerLocked(duration float64, offset float64, epoch u
 		rem = 0.5
 	}
 
-	// Double insurance: wake up 2 seconds before expected end to check hardware status
-	if rem > 2.5 {
-		preWake := rem - 2.0
-		s.timer = time.AfterFunc(time.Duration(preWake*float64(time.Second)), func() {
-			s.onPreEnd(epoch)
-		})
-	} else {
-		s.timer = time.AfterFunc(time.Duration(rem*float64(time.Second)), func() {
-			s.onTrackEnded(epoch)
-		})
-	}
+	// 800ms hardware DAC crystal & FIFO buffer drain window (prevents tail truncation on high-res audio)
+	timerDuration := time.Duration(rem*float64(time.Second)) + 800*time.Millisecond
+	s.timer = time.AfterFunc(timerDuration, func() {
+		s.onTrackEnded(epoch)
+	})
 }
 
 func (s *PlayerSession) cancelTimerLocked() {
@@ -278,19 +305,6 @@ func (s *PlayerSession) cancelTimerLocked() {
 	}
 }
 
-func (s *PlayerSession) onPreEnd(epoch uint64) {
-	s.mu.RLock()
-	if atomic.LoadUint64(&s.epoch) != epoch || s.state != "playing" {
-		s.mu.RUnlock()
-		return
-	}
-	s.mu.RUnlock()
-
-	// Wait remainder of the track buffer flush
-	time.Sleep(2 * time.Second)
-	s.onTrackEnded(epoch)
-}
-
 func (s *PlayerSession) onTrackEnded(epoch uint64) {
 	s.mu.Lock()
 	if atomic.LoadUint64(&s.epoch) != epoch || s.state != "playing" {
@@ -298,18 +312,27 @@ func (s *PlayerSession) onTrackEnded(epoch uint64) {
 		return
 	}
 
-	nextIdx := s.currentIndex + 1
-	if nextIdx >= len(s.queue) {
-		log.Info(fmt.Sprintf("PlayerSession [%s]: Auto-Advance completed all tracks in queue", s.deviceID))
-		s.state = "stopped"
-		s.startedAt = 0
-		s.timeOffset = 0
-		s.cancelTimerLocked()
-		atomic.AddUint64(&s.epoch, 1)
-		devID := s.deviceID
-		s.mu.Unlock()
-		_ = s.mgr.controlDevice(context.Background(), devID, "stop", 0, 0)
-		return
+	var nextIdx int
+	if s.playMode == "singleLoop" {
+		nextIdx = s.currentIndex
+	} else {
+		nextIdx = s.currentIndex + 1
+		if nextIdx >= len(s.queue) {
+			if s.playMode == "orderLoop" && len(s.queue) > 0 {
+				nextIdx = 0
+			} else {
+				log.Info(fmt.Sprintf("PlayerSession [%s]: Auto-Advance completed all tracks in queue", s.deviceID))
+				s.state = "stopped"
+				s.startedAt = 0
+				s.timeOffset = 0
+				s.cancelTimerLocked()
+				atomic.AddUint64(&s.epoch, 1)
+				devID := s.deviceID
+				s.mu.Unlock()
+				_ = s.mgr.controlDevice(context.Background(), devID, "stop", 0, 0)
+				return
+			}
+		}
 	}
 
 	curEpoch := atomic.AddUint64(&s.epoch, 1)
@@ -321,8 +344,8 @@ func (s *PlayerSession) onTrackEnded(epoch uint64) {
 	devID := s.deviceID
 	s.mu.Unlock()
 
-	log.Info(fmt.Sprintf("PlayerSession [%s] Auto-Advance: playing track %d/%d: %s - %s (%.1fs)",
-		devID, nextIdx+1, len(s.queue), track.Title, track.Artist, track.Duration))
+	log.Info(fmt.Sprintf("PlayerSession [%s] Auto-Advance (mode=%s): playing track %d/%d: %s - %s (%.1fs)",
+		devID, s.playMode, nextIdx+1, len(s.queue), track.Title, track.Artist, track.Duration))
 
 	_ = s.mgr.playTrackOnDevice(context.Background(), devID, track, 0)
 }
@@ -354,5 +377,6 @@ func (s *PlayerSession) GetStatus() NowPlayingInfo {
 		Queue:        qCopy,
 		CurrentIndex: s.currentIndex,
 		Epoch:        atomic.LoadUint64(&s.epoch),
+		PlayMode:     s.playMode,
 	}
 }

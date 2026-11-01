@@ -314,8 +314,30 @@ func sendSOAP(ctx context.Context, client *http.Client, controlURL, service, act
 }
 
 func SetAVTransportURI(ctx context.Context, client *http.Client, controlURL, streamURI, title, artist string) error {
-	didlLite := fmt.Sprintf(`&lt;DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"&gt;&lt;item id="0" parentID="-1" restricted="1"&gt;&lt;dc:title&gt;%s&lt;/dc:title&gt;&lt;dc:creator&gt;%s&lt;/dc:creator&gt;&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;&lt;res&gt;%s&lt;/res&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;`,
-		escapeXML(title), escapeXML(artist), escapeXML(streamURI))
+	mimeType := "audio/flac"
+	lowerURI := strings.ToLower(streamURI)
+	switch {
+	case strings.Contains(lowerURI, ".dsf") || strings.Contains(lowerURI, "format=dsf"):
+		mimeType = "audio/dsf"
+	case strings.Contains(lowerURI, ".dff") || strings.Contains(lowerURI, "format=dff"):
+		mimeType = "audio/x-dff"
+	case strings.Contains(lowerURI, ".wav") || strings.Contains(lowerURI, "format=wav"):
+		mimeType = "audio/wav"
+	case strings.Contains(lowerURI, ".ape") || strings.Contains(lowerURI, "format=ape"):
+		mimeType = "audio/x-ape"
+	case strings.Contains(lowerURI, ".wv") || strings.Contains(lowerURI, "format=wv"):
+		mimeType = "audio/x-wavpack"
+	case strings.Contains(lowerURI, ".mp3") || strings.Contains(lowerURI, "format=mp3"):
+		mimeType = "audio/mpeg"
+	case strings.Contains(lowerURI, ".m4a") || strings.Contains(lowerURI, ".aac") || strings.Contains(lowerURI, "format=m4a"):
+		mimeType = "audio/mp4"
+	case strings.Contains(lowerURI, ".ogg") || strings.Contains(lowerURI, ".oga") || strings.Contains(lowerURI, "format=ogg"):
+		mimeType = "audio/ogg"
+	}
+
+	protocolInfo := fmt.Sprintf("http-get:*:%s:*", mimeType)
+	didlLite := fmt.Sprintf(`&lt;DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"&gt;&lt;item id="0" parentID="-1" restricted="1"&gt;&lt;dc:title&gt;%s&lt;/dc:title&gt;&lt;dc:creator&gt;%s&lt;/dc:creator&gt;&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;&lt;res protocolInfo="%s"&gt;%s&lt;/res&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;`,
+		escapeXML(title), escapeXML(artist), protocolInfo, escapeXML(streamURI))
 
 	body := fmt.Sprintf(`<InstanceID>0</InstanceID><CurrentURI>%s</CurrentURI><CurrentURIMetaData>%s</CurrentURIMetaData>`,
 		escapeXML(streamURI), didlLite)

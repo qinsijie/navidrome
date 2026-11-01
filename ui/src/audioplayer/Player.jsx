@@ -131,6 +131,7 @@ const Player = () => {
   )
   const activeOutputDeviceRef = useRef(activeOutputDevice)
   activeOutputDeviceRef.current = activeOutputDevice
+  const activeDeviceNameRef = useRef('HQPlayer')
 
   useEffect(() => {
     httpClient('/api/output/devices?enabled_only=true')
@@ -138,6 +139,10 @@ const Player = () => {
         if (json?.activeId) {
           setActiveOutputDevice(json.activeId)
           localStorage.setItem('nd_active_output_device', json.activeId)
+          const activeDev = json.devices?.find((d) => d.id === json.activeId)
+          if (activeDev?.name) {
+            activeDeviceNameRef.current = activeDev.name
+          }
         }
       })
       .catch(() => {})
@@ -145,10 +150,38 @@ const Player = () => {
     const handleDeviceChanged = (e) => {
       const newId = e.detail?.deviceId || 'local'
       setActiveOutputDevice(newId)
+      if (e.detail?.device?.name) {
+        activeDeviceNameRef.current = e.detail.device.name
+      }
     }
     window.addEventListener('nd:output-device-changed', handleDeviceChanged)
     return () => {
       window.removeEventListener('nd:output-device-changed', handleDeviceChanged)
+    }
+  }, [])
+
+  const ensureStatusPill = useCallback((timeEl, isRemote, deviceName, stateText) => {
+    if (!timeEl || !timeEl.parentElement) return
+    let pill = timeEl.parentElement.querySelector('.nd-stream-status-pill')
+    if (!isRemote) {
+      if (pill) pill.remove()
+      return
+    }
+    if (!pill) {
+      pill = document.createElement('span')
+      pill.className = 'nd-stream-status-pill'
+      pill.innerHTML = '<span class="nd-stream-status-dot"></span><span class="nd-stream-status-text"></span>'
+      timeEl.insertAdjacentElement('afterend', pill)
+    }
+    const textEl = pill.querySelector('.nd-stream-status-text')
+    if (textEl) {
+      const current = playerStateRef.current?.current
+      const song = current?.song
+      const format = (song?.suffix || 'RAW').toUpperCase()
+      const text = `${deviceName} · 源码直通 · ${format} · ${stateText}`
+      if (textEl.innerText !== text) {
+        textEl.innerText = text
+      }
     }
   }, [])
 
@@ -169,14 +202,16 @@ const Player = () => {
           .catch(() => {})
       }
     }
+    const handleBlur = () => {
+      isHiddenRef.current = true
+    }
     document.addEventListener('visibilitychange', handleVisibilityChange)
     window.addEventListener('focus', handleVisibilityChange)
-    window.addEventListener('blur', () => {
-      isHiddenRef.current = true
-    })
+    window.addEventListener('blur', handleBlur)
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('focus', handleVisibilityChange)
+      window.removeEventListener('blur', handleBlur)
     }
   }, [])
 
@@ -261,9 +296,10 @@ const Player = () => {
         tracks: payloadTracks,
         startIndex: currentIdx,
         timeOffset: (audioInstance?.currentTime && audioInstance.currentTime >= 1.0) ? audioInstance.currentTime : 0,
+        playMode: playerState.mode,
       }),
     }).catch(() => {})
-  }, [activeOutputDevice, playerState.queue, playerState.playIndex, playerState.clear])
+  }, [activeOutputDevice, playerState.queue, playerState.playIndex, playerState.mode, playerState.clear])
 
   // Sync state from server session every 2 seconds
   useInterval(
@@ -348,8 +384,11 @@ const Player = () => {
           return `${m < 10 ? '0' + m : m}:${sec < 10 ? '0' + sec : sec}`
         }
         const timeEls = document.querySelectorAll('.current-time, .music-player-panel .current-time')
+        const devName = activeDeviceNameRef.current || (activeOutputDevice === 'hqplayer' ? 'HQPlayer' : '远端设备')
+        const stateText = clock.playing ? '推流中' : '已暂停'
         timeEls.forEach((el) => {
           el.innerText = formatTime(currentSec)
+          ensureStatusPill(el, true, devName, stateText)
         })
         const durEls = document.querySelectorAll('.duration, .music-player-panel .duration')
         if (clock.duration > 0) {
@@ -359,7 +398,9 @@ const Player = () => {
         }
         const trackEls = document.querySelectorAll('.rc-slider-track, .progress-bar .rc-slider-track')
         const handleEls = document.querySelectorAll('.rc-slider-handle, .progress-bar .rc-slider-handle')
-        if (clock.duration > 0) {
+        const isDragging = document.querySelector('.rc-slider-handle-dragging') ||
+          document.querySelector('.rc-slider-handle:active')
+        if (!isDragging && clock.duration > 0) {
           const pct = Math.min(100, Math.max(0, (currentSec / clock.duration) * 100))
           trackEls.forEach((el) => {
             el.style.width = `${pct}%`
@@ -376,6 +417,7 @@ const Player = () => {
 
   useEffect(() => {
     if (activeOutputDevice === 'local') {
+      document.querySelectorAll('.nd-stream-status-pill').forEach((el) => el.remove())
       httpClient('/api/output/control', {
         method: 'POST',
         body: JSON.stringify({ action: 'stop' }),
@@ -921,7 +963,15 @@ const Player = () => {
         onPlayIndexChange={onPlayIndexChange}
         onAudioPlayTrackChange={onAudioPlayTrackChange}
         onAudioPause={onAudioPause}
-        onPlayModeChange={(mode) => dispatch(setPlayMode(mode))}
+        onPlayModeChange={(mode) => {
+          dispatch(setPlayMode(mode))
+          if (activeOutputDeviceRef.current !== 'local') {
+            httpClient('/api/output/control', {
+              method: 'POST',
+              body: JSON.stringify({ action: 'playMode', mode }),
+            }).catch(() => {})
+          }
+        }}
         onAudioEnded={onAudioEnded}
         onCoverClick={onCoverClick}
         onAudioError={onAudioError}
