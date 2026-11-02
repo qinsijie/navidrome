@@ -5,6 +5,11 @@ import clsx from 'clsx'
 import { useTranslate, MenuItemLink, getResources } from 'react-admin'
 import ViewListIcon from '@material-ui/icons/ViewList'
 import AlbumIcon from '@material-ui/icons/Album'
+import CloudQueueIcon from '@material-ui/icons/CloudQueue'
+import SearchIcon from '@material-ui/icons/Search'
+import QueueMusicIcon from '@material-ui/icons/QueueMusic'
+import EmojiEventsIcon from '@material-ui/icons/EmojiEvents'
+import SettingsEthernetIcon from '@material-ui/icons/SettingsEthernet'
 import SubMenu from './SubMenu'
 import { humanize, pluralize } from 'inflection'
 import albumLists from '../album/albumLists'
@@ -56,6 +61,7 @@ const Menu = ({ dense = false }) => {
   // TODO State is not persisted in mobile when you close the sidebar menu. Move to redux?
   const [state, setState] = useState({
     menuAlbumList: true,
+    menuOnlineMusic: true,
     menuPlaylists: true,
     menuSharedPlaylists: true,
   })
@@ -124,6 +130,51 @@ const Menu = ({ dense = false }) => {
         {Object.keys(albumLists).map((type) =>
           renderAlbumMenuItemLink(type, albumLists[type]),
         )}
+      </SubMenu>
+      <SubMenu
+        handleToggle={() => handleToggle('menuOnlineMusic')}
+        isOpen={state.menuOnlineMusic}
+        sidebarIsOpen={open}
+        name="menu.onlineMusic"
+        icon={<CloudQueueIcon />}
+        dense={dense}
+      >
+        <MenuItemLink
+          to="/online-music/search"
+          activeClassName={classes.active}
+          primaryText="聚合搜索"
+          leftIcon={<SearchIcon />}
+          sidebarIsOpen={open}
+          dense={dense}
+          exact
+        />
+        <MenuItemLink
+          to="/online-music/playlists"
+          activeClassName={classes.active}
+          primaryText="精选歌单"
+          leftIcon={<QueueMusicIcon />}
+          sidebarIsOpen={open}
+          dense={dense}
+          exact
+        />
+        <MenuItemLink
+          to="/online-music/leaderboards"
+          activeClassName={classes.active}
+          primaryText="热门榜单"
+          leftIcon={<EmojiEventsIcon />}
+          sidebarIsOpen={open}
+          dense={dense}
+          exact
+        />
+        <MenuItemLink
+          to="/online-music/settings"
+          activeClassName={classes.active}
+          primaryText="音源管理"
+          leftIcon={<SettingsEthernetIcon />}
+          sidebarIsOpen={open}
+          dense={dense}
+          exact
+        />
       </SubMenu>
       {resources.filter(subItems(undefined)).map(renderResourceMenuItemLink)}
       {config.devSidebarPlaylists && open ? (

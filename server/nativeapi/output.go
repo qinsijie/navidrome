@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/navidrome/navidrome/conf"
+	"github.com/navidrome/navidrome/core/musicengine"
 	"github.com/navidrome/navidrome/core/output"
 	"github.com/navidrome/navidrome/core/stream"
 	"github.com/navidrome/navidrome/log"
@@ -78,6 +79,31 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 		if err != nil || mf == nil {
 			http.NotFound(w, r)
 			return
+		}
+
+		if strings.HasPrefix(mf.Path, "online://") {
+			source, songID, quality, ok := musicengine.ParseProtocolPath(mf.Path)
+			if !ok {
+				source, songID, ok = musicengine.ParseUniversalID(mf.ID)
+			}
+			if ok {
+				engine := musicengine.GetEngine(api.ds)
+				resolved, err := engine.ResolveStreamURL(r.Context(), source, songID, quality)
+				if err != nil {
+					log.Error(r.Context(), "Audio Stream: Failed to resolve online stream URL", "id", id, err)
+					http.Error(w, "stream resolve error: "+err.Error(), http.StatusBadGateway)
+					return
+				}
+				relay := musicengine.NewStreamRelay(resolved, 0, int64(mf.Size))
+				defer relay.Close()
+				if err := relay.StartPull(r.Context(), 0); err != nil {
+					log.Error(r.Context(), "Audio Stream: Failed to connect to online audio CDN", "id", id, err)
+					http.Error(w, "stream relay pull error: "+err.Error(), http.StatusBadGateway)
+					return
+				}
+				relay.ServeHTTP(w, r)
+				return
+			}
 		}
 
 		filePath := mf.AbsolutePath()

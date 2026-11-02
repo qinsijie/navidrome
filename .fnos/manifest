@@ -1,5 +1,5 @@
 appname               = navidrome
-version               = 0.64.3
+version               = 0.64.4
 display_name          = Navidrome
 desc                  = 轻量级高性能个人音乐服务器，支持飞牛内嵌、Hi-Fi 串流与 DLNA/HQPlayer 源码输出
 arch                  = x86_64

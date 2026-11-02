@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/navidrome/navidrome/conf"
+	"github.com/navidrome/navidrome/core/musicengine"
 	"github.com/navidrome/navidrome/core/stream"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
@@ -30,6 +32,29 @@ func (api *Router) Stream(w http.ResponseWriter, r *http.Request) (*responses.Su
 	mf, err := api.ds.MediaFile().Get(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+
+	if strings.HasPrefix(mf.Path, "online://") {
+		source, songID, quality, ok := musicengine.ParseProtocolPath(mf.Path)
+		if !ok {
+			source, songID, ok = musicengine.ParseUniversalID(mf.ID)
+		}
+		if ok {
+			engine := musicengine.GetEngine(api.ds)
+			resolved, err := engine.ResolveStreamURL(ctx, source, songID, quality)
+			if err != nil {
+				log.Error(ctx, "Subsonic Stream: Failed to resolve online stream URL", "id", id, err)
+				return nil, newError(responses.ErrorDataNotFound, "Online song unavailable: %s", err.Error())
+			}
+			relay := musicengine.NewStreamRelay(resolved, 0, int64(mf.Size))
+			defer relay.Close()
+			if err := relay.StartPull(ctx, 0); err != nil {
+				log.Error(ctx, "Subsonic Stream: Failed to connect to online audio CDN", "id", id, err)
+				return nil, newError(responses.ErrorGeneric, "CDN connection failed: %s", err.Error())
+			}
+			relay.ServeHTTP(w, r)
+			return nil, nil
+		}
 	}
 
 	streamReq := api.transcodeDecision.ResolveRequest(ctx, mf, format, maxBitRate, timeOffset)

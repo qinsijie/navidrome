@@ -404,6 +404,9 @@ func (r *mediaFileRepository) FindByPaths(ctx context.Context, paths []string) (
 }
 
 func (r *mediaFileRepository) Delete(ctx context.Context, id string) error {
+	if strings.HasPrefix(id, "online:") {
+		return nil
+	}
 	return r.delete(ctx, Eq{"id": id})
 }
 
@@ -435,7 +438,10 @@ func (r *mediaFileRepository) DeleteAllMissing(ctx context.Context) (int64, erro
 	if !user.IsAdmin {
 		return 0, rest.ErrPermissionDenied
 	}
-	del := Delete(r.tableName).Where(Eq{"missing": true})
+	del := Delete(r.tableName).Where(And{
+		Eq{"missing": true},
+		NotLike{"path": "online://%"},
+	})
 	return r.executeSQL(ctx, del)
 }
 
@@ -448,6 +454,7 @@ func (r *mediaFileRepository) DeleteMissing(ctx context.Context, ids []string) e
 		And{
 			Eq{"missing": true},
 			Eq{"id": ids},
+			NotLike{"path": "online://%"},
 		},
 	)
 }
