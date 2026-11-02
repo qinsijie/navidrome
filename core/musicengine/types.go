@@ -135,12 +135,24 @@ type LeaderboardDetail struct {
 
 // SourceScriptMeta holds metadata of an imported user script
 type SourceScriptMeta struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Version     string   `json:"version"`
-	Author      string   `json:"author"`
-	Sources     []string `json:"sources"`
-	IsActive    bool     `json:"isActive"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID              string              `json:"id"`
+	Name            string              `json:"name"`
+	Description     string              `json:"description"`
+	Version         string              `json:"version"`
+	Author          string              `json:"author"`
+	Homepage        string              `json:"homepage,omitempty"`
+	SubscriptionURL string              `json:"subscriptionUrl,omitempty"`
+	Sources         []string            `json:"sources"`
+	Qualities       map[string][]string `json:"qualities,omitempty"`
+	IsActive        bool                `json:"isActive"`
+	UpdatedAt       time.Time           `json:"updatedAt"`
+}
+
+// PingResult represents the network latency test result for a music platform
+type PingResult struct {
+	Platform string `json:"platform"`
+	Name     string `json:"name"`
+	DelayMS  int64  `json:"delayMs"`
+	Status   string `json:"status"` // "healthy", "slow", "error"
+	Error    string `json:"error,omitempty"`
 }

@@ -85,6 +85,29 @@ const authProvider = {
       })
   },
 
+  fnosResetPassword: (newPassword, username = '') => {
+    const url = baseUrl('/auth/fnos-reset-password')
+    return fetch(url, {
+      method: 'POST',
+      headers: new Headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ newPassword, username }),
+    })
+      .then((response) => {
+        if (response.status < 200 || response.status >= 300) {
+          return response.json().then((err) => {
+            throw new Error(err.message || response.statusText)
+          })
+        }
+        return response.json()
+      })
+      .then((response) => {
+        jwtDecode(response.token)
+        storeAuthenticationInfo(response)
+        config.firstTime = false
+        return response
+      })
+  },
+
   logout: () => {
     removeItems()
     // Only proxy-authenticated sessions go to the IdP; others (e.g. direct LAN access) get the login form

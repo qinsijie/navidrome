@@ -7,8 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -342,61 +346,370 @@ func mapToOnlineTrack(source string, m map[string]any) *OnlineTrack {
 	}
 }
 
-// ActivateScript compiles, verifies, and atomically switches the active user script
-func (e *MusicEngine) ActivateScript(scriptContent string, scriptID, name, description string) error {
-	e.reloadMu.Lock()
-	defer e.reloadMu.Unlock()
+// ExtractScriptMetadata parses JSDoc headers from standard LX Music scripts
+func ExtractScriptMetadata(content string) SourceScriptMeta {
+	reTag := func(tag string) string {
+		re := regexp.MustCompile(`(?i)@` + tag + `\s+([^\r\n*]+)`)
+		m := re.FindStringSubmatch(content)
+		if len(m) > 1 {
+			return strings.TrimSpace(m[1])
+		}
+		return ""
+	}
 
-	// 1. Compile script
-	program, err := goja.Compile("user_script.js", scriptContent, false)
+	name := reTag("name")
+	if name == "" {
+		name = "自定义音源"
+	}
+	description := reTag("description")
+	version := reTag("version")
+	author := reTag("author")
+	homepage := reTag("homepage")
+
+	h := sha256.Sum256([]byte(content))
+	scriptID := hex.EncodeToString(h[:6])
+
+	if version == "" {
+		version = hex.EncodeToString(h[:4])
+	}
+
+	return SourceScriptMeta{
+		ID:          scriptID,
+		Name:        name,
+		Description: description,
+		Version:     version,
+		Author:      author,
+		Homepage:    homepage,
+		Sources:     []string{"wy", "tx", "kg", "kw", "mg"},
+		UpdatedAt:   time.Now(),
+	}
+}
+
+// GetAllScripts returns metadata for all installed user scripts
+func (e *MusicEngine) GetAllScripts() []SourceScriptMeta {
+	installedDir := filepath.Join(GetEngineCacheDir(), "scripts", "installed")
+	_ = os.MkdirAll(installedDir, 0755)
+
+	activeID := ""
+	if activeBytes, err := os.ReadFile(filepath.Join(GetEngineCacheDir(), "scripts", "active_id.txt")); err == nil {
+		activeID = strings.TrimSpace(string(activeBytes))
+	}
+
+	entries, err := os.ReadDir(installedDir)
 	if err != nil {
-		return fmt.Errorf("script compilation failed: %w", err)
+		return nil
+	}
+
+	var results []SourceScriptMeta
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			metaBytes, err := os.ReadFile(filepath.Join(installedDir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			var meta SourceScriptMeta
+			if err := json.Unmarshal(metaBytes, &meta); err == nil {
+				meta.IsActive = (meta.ID == activeID)
+				results = append(results, meta)
+			}
+		}
+	}
+
+	// If no scripts in installed/ but active_meta.json exists, load it
+	if len(results) == 0 {
+		activeMetaFile := filepath.Join(GetEngineCacheDir(), "scripts", "active_meta.json")
+		if metaBytes, err := os.ReadFile(activeMetaFile); err == nil {
+			var meta SourceScriptMeta
+			if err := json.Unmarshal(metaBytes, &meta); err == nil {
+				meta.IsActive = true
+				results = append(results, meta)
+			}
+		}
+	}
+
+	return results
+}
+
+// ImportScript compiles, saves, and activates a script
+func (e *MusicEngine) ImportScript(content string, subscriptionURL string) (*SourceScriptMeta, error) {
+	if strings.TrimSpace(content) == "" {
+		return nil, errors.New("script content is empty")
+	}
+
+	// 1. Verify compilation
+	program, err := goja.Compile("user_script.js", content, false)
+	if err != nil {
+		return nil, fmt.Errorf("script syntax compilation failed: %w", err)
 	}
 
 	// 2. Pre-verify in isolated worker
 	testWorker, err := NewWorker(program)
 	if err != nil {
-		return fmt.Errorf("testing script runtime failed: %w", err)
+		return nil, fmt.Errorf("testing script runtime failed: %w", err)
 	}
+	_ = testWorker // GC
 
-	// Calculate version hash
-	h := sha256.Sum256([]byte(scriptContent))
-	versionHash := hex.EncodeToString(h[:8])
-
-	meta := SourceScriptMeta{
-		ID:          scriptID,
-		Name:        name,
-		Description: description,
-		Version:     versionHash,
-		Sources:     []string{"wy", "tx", "kg", "kw", "mg"},
-		IsActive:    true,
-		UpdatedAt:   time.Now(),
+	// 3. Extract metadata
+	meta := ExtractScriptMetadata(content)
+	if subscriptionURL != "" {
+		meta.SubscriptionURL = subscriptionURL
 	}
+	meta.IsActive = true
+	meta.UpdatedAt = time.Now()
 
-	// 3. Initialize new worker pool
+	// 4. Save to installed dir
+	installedDir := filepath.Join(GetEngineCacheDir(), "scripts", "installed")
+	_ = os.MkdirAll(installedDir, 0755)
+
+	scriptPath := filepath.Join(installedDir, meta.ID+".js")
+	metaPath := filepath.Join(installedDir, meta.ID+".json")
+
+	if err := os.WriteFile(scriptPath, []byte(content), 0644); err != nil {
+		return nil, fmt.Errorf("failed to save script file: %w", err)
+	}
+	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
+	_ = os.WriteFile(metaPath, metaBytes, 0644)
+
+	// Also mirror to active files
+	scriptsDir := filepath.Join(GetEngineCacheDir(), "scripts")
+	_ = os.WriteFile(filepath.Join(scriptsDir, "active.js"), []byte(content), 0644)
+	_ = os.WriteFile(filepath.Join(scriptsDir, "active_meta.json"), metaBytes, 0644)
+	_ = os.WriteFile(filepath.Join(scriptsDir, "active_id.txt"), []byte(meta.ID), 0644)
+
+	// 5. Activate runtime
+	e.reloadMu.Lock()
+	defer e.reloadMu.Unlock()
+
 	newPool := NewWorkerPool(program)
-
-	// 4. Atomic pointer swap
 	newState := &EngineState{
-		version:   versionHash,
-		scriptID:  scriptID,
+		version:   meta.Version,
+		scriptID:  meta.ID,
 		meta:      meta,
 		program:   program,
 		pool:      newPool,
 		sources:   meta.Sources,
 	}
-
 	e.state.Store(newState)
 
-	// 5. Persist script to cache dir
-	scriptsDir := filepath.Join(GetEngineCacheDir(), "scripts")
-	_ = os.WriteFile(filepath.Join(scriptsDir, "active.js"), []byte(scriptContent), 0644)
-	metaBytes, _ := json.Marshal(meta)
-	_ = os.WriteFile(filepath.Join(scriptsDir, "active_meta.json"), metaBytes, 0644)
+	// Clear stream cache on switch
+	e.cacheMu.Lock()
+	e.streamCache = make(map[string]*cachedStreamItem)
+	e.cacheMu.Unlock()
 
-	log.Info("MusicEngine: Script activated successfully", "id", scriptID, "version", versionHash)
-	_ = testWorker // GC
+	log.Info("MusicEngine: Script imported and activated successfully", "id", meta.ID, "name", meta.Name, "version", meta.Version)
+	return &meta, nil
+}
+
+// ImportScriptFromURL fetches remote script with timeout and imports it
+func (e *MusicEngine) ImportScriptFromURL(ctx context.Context, scriptURL string) (*SourceScriptMeta, error) {
+	scriptURL = strings.TrimSpace(scriptURL)
+	if !strings.HasPrefix(scriptURL, "http://") && !strings.HasPrefix(scriptURL, "https://") {
+		return nil, errors.New("url must start with http:// or https://")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, scriptURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download script from url: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("remote server returned status: %s", resp.Status)
+	}
+
+	// Limit script size to 10MB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read remote script content: %w", err)
+	}
+
+	return e.ImportScript(string(body), scriptURL)
+}
+
+// ActivateScriptByID switches active script to a previously installed one
+func (e *MusicEngine) ActivateScriptByID(scriptID string) error {
+	installedDir := filepath.Join(GetEngineCacheDir(), "scripts", "installed")
+	scriptPath := filepath.Join(installedDir, scriptID+".js")
+	metaPath := filepath.Join(installedDir, scriptID+".json")
+
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return fmt.Errorf("script file not found: %w", err)
+	}
+
+	var meta SourceScriptMeta
+	if mBytes, err := os.ReadFile(metaPath); err == nil {
+		_ = json.Unmarshal(mBytes, &meta)
+	} else {
+		meta = ExtractScriptMetadata(string(content))
+		meta.ID = scriptID
+	}
+	meta.IsActive = true
+
+	program, err := goja.Compile("user_script.js", string(content), false)
+	if err != nil {
+		return fmt.Errorf("script compilation failed: %w", err)
+	}
+
+	e.reloadMu.Lock()
+	defer e.reloadMu.Unlock()
+
+	newPool := NewWorkerPool(program)
+	newState := &EngineState{
+		version:   meta.Version,
+		scriptID:  meta.ID,
+		meta:      meta,
+		program:   program,
+		pool:      newPool,
+		sources:   meta.Sources,
+	}
+	e.state.Store(newState)
+
+	// Record active id
+	scriptsDir := filepath.Join(GetEngineCacheDir(), "scripts")
+	_ = os.WriteFile(filepath.Join(scriptsDir, "active.js"), content, 0644)
+	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
+	_ = os.WriteFile(filepath.Join(scriptsDir, "active_meta.json"), metaBytes, 0644)
+	_ = os.WriteFile(filepath.Join(scriptsDir, "active_id.txt"), []byte(scriptID), 0644)
+
+	// Clear stream cache on switch
+	e.cacheMu.Lock()
+	e.streamCache = make(map[string]*cachedStreamItem)
+	e.cacheMu.Unlock()
+
+	log.Info("MusicEngine: Script activated by ID", "id", scriptID, "name", meta.Name)
 	return nil
+}
+
+// DeleteScript removes an installed script
+func (e *MusicEngine) DeleteScript(scriptID string) error {
+	state := e.state.Load()
+	if state != nil && state.scriptID == scriptID {
+		return errors.New("无法删除当前正在激活的音源，请先切换至其他音源或停用")
+	}
+
+	installedDir := filepath.Join(GetEngineCacheDir(), "scripts", "installed")
+	_ = os.Remove(filepath.Join(installedDir, scriptID+".js"))
+	_ = os.Remove(filepath.Join(installedDir, scriptID+".json"))
+	return nil
+}
+
+// CheckUpdate checks if a subscription script has remote updates
+func (e *MusicEngine) CheckUpdate(ctx context.Context, scriptID string) (bool, string, error) {
+	installedDir := filepath.Join(GetEngineCacheDir(), "scripts", "installed")
+	metaPath := filepath.Join(installedDir, scriptID+".json")
+
+	metaBytes, err := os.ReadFile(metaPath)
+	if err != nil {
+		return false, "", errors.New("音源配置不存在")
+	}
+	var meta SourceScriptMeta
+	if err := json.Unmarshal(metaBytes, &meta); err != nil {
+		return false, "", err
+	}
+
+	if meta.SubscriptionURL == "" {
+		return false, "", errors.New("该音源非网络订阅导入，无远端更新地址")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, meta.SubscriptionURL, nil)
+	if err != nil {
+		return false, "", err
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, "", fmt.Errorf("检查更新失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	if err != nil {
+		return false, "", err
+	}
+
+	remoteMeta := ExtractScriptMetadata(string(body))
+	if remoteMeta.Version != "" && remoteMeta.Version != meta.Version {
+		return true, remoteMeta.Version, nil
+	}
+
+	// Compare content hash if version tag is identical
+	currentContent, _ := os.ReadFile(filepath.Join(installedDir, scriptID+".js"))
+	if len(currentContent) > 0 && sha256.Sum256(currentContent) != sha256.Sum256(body) {
+		return true, "最新修订版", nil
+	}
+
+	return false, meta.Version, nil
+}
+
+// PingPlatforms tests latency and health of supported platforms
+func (e *MusicEngine) PingPlatforms(ctx context.Context) ([]PingResult, error) {
+	state := e.state.Load()
+	if state == nil || state.pool == nil {
+		return nil, errors.New("music engine has no active source script configured")
+	}
+
+	platformNames := map[string]string{
+		"wy": "网易云音乐",
+		"tx": "QQ音乐",
+		"kg": "酷狗音乐",
+		"kw": "酷我音乐",
+		"mg": "咪咕音乐",
+	}
+
+	var results []PingResult
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for _, src := range state.sources {
+		source := src
+		name := platformNames[source]
+		if name == "" {
+			name = strings.ToUpper(source)
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			// Probe platform with simple search
+			_, err := e.Search(ctx, source, "海阔天空", 1, 1)
+			delay := time.Since(start).Milliseconds()
+
+			res := PingResult{
+				Platform: source,
+				Name:     name,
+				DelayMS:  delay,
+				Status:   "healthy",
+			}
+			if err != nil {
+				res.Status = "error"
+				res.Error = err.Error()
+			} else if delay > 1200 {
+				res.Status = "slow"
+			}
+
+			mu.Lock()
+			results = append(results, res)
+			mu.Unlock()
+		}()
+	}
+
+	wg.Wait()
+	return results, nil
+}
+
+// ActivateScript compiles, verifies, and atomically switches the active user script
+func (e *MusicEngine) ActivateScript(scriptContent string, scriptID, name, description string) error {
+	_, err := e.ImportScript(scriptContent, "")
+	return err
 }
 
 // GetActiveScriptMeta returns current active script info
@@ -410,6 +723,17 @@ func (e *MusicEngine) GetActiveScriptMeta() *SourceScriptMeta {
 }
 
 func (e *MusicEngine) loadActiveScriptFromDisk() {
+	activeIDFile := filepath.Join(GetEngineCacheDir(), "scripts", "active_id.txt")
+	if idBytes, err := os.ReadFile(activeIDFile); err == nil {
+		activeID := strings.TrimSpace(string(idBytes))
+		if activeID != "" {
+			if err := e.ActivateScriptByID(activeID); err == nil {
+				return
+			}
+		}
+	}
+
+	// Fallback to active.js
 	scriptsDir := filepath.Join(GetEngineCacheDir(), "scripts")
 	activeFile := filepath.Join(scriptsDir, "active.js")
 	content, err := os.ReadFile(activeFile)
@@ -417,11 +741,5 @@ func (e *MusicEngine) loadActiveScriptFromDisk() {
 		return
 	}
 
-	var meta SourceScriptMeta
-	metaFile := filepath.Join(scriptsDir, "active_meta.json")
-	if mBytes, err := os.ReadFile(metaFile); err == nil {
-		_ = json.Unmarshal(mBytes, &meta)
-	}
-
-	_ = e.ActivateScript(string(content), meta.ID, meta.Name, meta.Description)
+	_, _ = e.ImportScript(string(content), "")
 }

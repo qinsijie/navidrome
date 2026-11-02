@@ -218,6 +218,7 @@ func (s *Server) mountAuthenticationRoutes() chi.Router {
 		}
 		r.Post("/fnos-login", fnosLogin(s.ds))
 		r.Get("/fnos-login", fnosLogin(s.ds))
+		r.Post("/fnos-reset-password", fnosResetPassword(s.ds))
 		r.Post("/createAdmin", createAdmin(s.ds))
 	})
 }

@@ -47,11 +47,22 @@ const useStyle = makeStyles(
         width: '100vw !important',
         height: '72px !important',
         zIndex: '1300 !important',
-        boxShadow: '0 -2px 10px rgba(0, 0, 0, 0.15) !important',
-        backgroundColor: `${theme.palette.background.paper} !important`,
-        borderTop: `1px solid ${theme.palette.divider} !important`,
+        boxShadow:
+          theme.palette.type === 'dark'
+            ? '0 -4px 24px rgba(0, 0, 0, 0.35) !important'
+            : '0 -4px 24px rgba(0, 0, 0, 0.08) !important',
+        backgroundColor:
+          theme.palette.type === 'dark'
+            ? 'rgba(20, 20, 22, 0.82) !important'
+            : 'rgba(255, 255, 255, 0.82) !important',
+        backdropFilter: 'blur(16px) saturate(180%) !important',
+        WebkitBackdropFilter: 'blur(16px) saturate(180%) !important',
+        borderTop:
+          theme.palette.type === 'dark'
+            ? '1px solid rgba(255, 255, 255, 0.08) !important'
+            : '1px solid rgba(0, 0, 0, 0.08) !important',
         color: `${theme.palette.text.primary} !important`,
-        transition: 'none !important',
+        transition: 'background-color 0.3s ease, border-color 0.3s ease !important',
         transform: 'none !important',
       },
       '& .music-player-panel .panel-content': {
@@ -178,7 +189,10 @@ const useStyle = makeStyles(
       },
       '& .music-player-panel .progress-bar .rc-slider-rail': {
         height: '3px !important',
-        backgroundColor: 'rgba(255, 255, 255, 0.12) !important',
+        backgroundColor:
+          theme.palette.type === 'dark'
+            ? 'rgba(255, 255, 255, 0.12) !important'
+            : 'rgba(0, 0, 0, 0.10) !important',
       },
       '& .music-player-panel .progress-bar .rc-slider-track': {
         height: '3px !important',

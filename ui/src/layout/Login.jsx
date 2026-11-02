@@ -8,6 +8,10 @@ import CardActions from '@material-ui/core/CardActions'
 import CircularProgress from '@material-ui/core/CircularProgress'
 import Link from '@material-ui/core/Link'
 import TextField from '@material-ui/core/TextField'
+import Dialog from '@material-ui/core/Dialog'
+import DialogTitle from '@material-ui/core/DialogTitle'
+import DialogContent from '@material-ui/core/DialogContent'
+import DialogContentText from '@material-ui/core/DialogContentText'
 import { ThemeProvider, makeStyles } from '@material-ui/core/styles'
 import {
   createMuiTheme,
@@ -115,6 +119,31 @@ const FormLogin = ({ loading, handleSubmit, validate, onFnosLogin }) => {
   const translate = useTranslate()
   const classes = useStyles()
   const [showManualLogin, setShowManualLogin] = useState(false)
+  const [openReset, setOpenReset] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [resetting, setResetting] = useState(false)
+  const [resetError, setResetError] = useState('')
+
+  const handleResetSubmit = async () => {
+    if (!newPassword) {
+      setResetError('新密码不能为空')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setResetError('两次输入的密码不一致')
+      return
+    }
+    setResetting(true)
+    setResetError('')
+    try {
+      await authProvider.fnosResetPassword(newPassword)
+      window.location.href = '/'
+    } catch (err) {
+      setResetting(false)
+      setResetError(err.message || '重置密码失败，请重试')
+    }
+  }
 
   return (
     <Form
@@ -218,9 +247,69 @@ const FormLogin = ({ loading, handleSubmit, validate, onFnosLogin }) => {
                       {translate('ra.auth.sign_in')}
                     </Button>
                   </CardActions>
+                  <div style={{ textAlign: 'center', marginTop: 4, marginBottom: 12 }}>
+                    <Button
+                      size="small"
+                      color="secondary"
+                      onClick={() => {
+                        setResetError('')
+                        setNewPassword('')
+                        setConfirmPassword('')
+                        setOpenReset(true)
+                      }}
+                      style={{ textTransform: 'none', fontSize: '0.8rem' }}
+                    >
+                      忘记独立密码？通过 NAS 账号直接重置
+                    </Button>
+                  </div>
                 </>
               )}
             </Card>
+            <Dialog open={openReset} onClose={() => !resetting && setOpenReset(false)} maxWidth="xs" fullWidth>
+              <DialogTitle>通过 NAS 账号重置独立密码</DialogTitle>
+              <DialogContent>
+                <DialogContentText style={{ fontSize: '0.9rem' }}>
+                  无需原密码。系统将基于当前 NAS 管理员身份直接更新密码，并自动生成凭证登录系统。
+                </DialogContentText>
+                {resetError && (
+                  <div style={{ color: '#f44336', fontSize: '0.85rem', marginBottom: 12 }}>
+                    {resetError}
+                  </div>
+                )}
+                <TextField
+                  autoFocus
+                  margin="dense"
+                  label="新密码"
+                  type="password"
+                  fullWidth
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  disabled={resetting}
+                />
+                <TextField
+                  margin="dense"
+                  label="确认新密码"
+                  type="password"
+                  fullWidth
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  disabled={resetting}
+                />
+              </DialogContent>
+              <DialogActions style={{ padding: '12px 20px' }}>
+                <Button onClick={() => setOpenReset(false)} disabled={resetting}>
+                  取消
+                </Button>
+                <Button
+                  onClick={handleResetSubmit}
+                  color="primary"
+                  variant="contained"
+                  disabled={resetting}
+                >
+                  {resetting ? <CircularProgress size={20} /> : '确认重置并直接登录'}
+                </Button>
+              </DialogActions>
+            </Dialog>
             <Notification />
           </div>
         </form>

@@ -43,10 +43,46 @@ export const getSources = async () => {
   return response.json
 }
 
-export const uploadSource = async (name, description, script) => {
+export const uploadSource = async (name, description, script, subscriptionUrl = '') => {
   const response = await httpClient('/api/musicengine/sources/upload', {
     method: 'POST',
-    body: JSON.stringify({ name, description, script }),
+    body: JSON.stringify({ name, description, script, subscriptionUrl }),
+  })
+  return response.json
+}
+
+export const importSourceFromUrl = async (url) => {
+  const response = await httpClient('/api/musicengine/sources/import-url', {
+    method: 'POST',
+    body: JSON.stringify({ url }),
+  })
+  return response.json
+}
+
+export const activateSource = async (id) => {
+  const response = await httpClient(`/api/musicengine/sources/${encodeURIComponent(id)}/activate`, {
+    method: 'POST',
+  })
+  return response.json
+}
+
+export const deleteSource = async (id) => {
+  const response = await httpClient(`/api/musicengine/sources/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+  return response.json
+}
+
+export const checkSourceUpdate = async (id) => {
+  const response = await httpClient(`/api/musicengine/sources/${encodeURIComponent(id)}/check-update`, {
+    method: 'POST',
+  })
+  return response.json
+}
+
+export const pingSources = async () => {
+  const response = await httpClient('/api/musicengine/sources/ping', {
+    method: 'POST',
   })
   return response.json
 }

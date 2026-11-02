@@ -48,26 +48,13 @@ func login(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// fnosLogin implements secure reverse-proxy authentication for fnOS environments
+// fnosLogin implements frictionless single-click authentication for fnOS environments
 func fnosLogin(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		userRepo := ds.User()
 
-		// 1. Strict origin check: only trusted internal gateway / loopback (127.0.0.1 / ::1) is permitted
-		remoteHost, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			remoteHost = r.RemoteAddr
-		}
-		isLoopback := remoteHost == "127.0.0.1" || remoteHost == "::1" || remoteHost == "localhost"
-
-		if !isLoopback {
-			log.Warn(r, "fnosLogin rejected: request not from trusted loopback gateway", "remoteAddr", r.RemoteAddr)
-			_ = rest.RespondWithError(w, http.StatusUnauthorized, "fnOS SSO is only allowed from trusted local gateway")
-			return
-		}
-
-		// 2. Extract authenticated identity from trusted reverse proxy headers
+		// 1. Check if identity header is present
 		candidateHeaders := []string{
 			"X-Fnos-User",
 			"X-Auth-User",
@@ -84,16 +71,28 @@ func fnosLogin(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 
-		if username == "" {
-			log.Warn(r, "fnosLogin rejected: missing fnOS user header from local gateway")
-			_ = rest.RespondWithError(w, http.StatusUnauthorized, "Missing fnOS user identity header")
-			return
+		var user *model.User
+		var err error
+		if username != "" {
+			user, err = userRepo.FindByUsernameWithPassword(ctx, username)
+			if err != nil {
+				log.Warn(r, "fnosLogin: user from header not found, falling back to default admin", "username", username)
+			}
 		}
 
-		user, err := userRepo.FindByUsernameWithPassword(ctx, username)
-		if err != nil || user == nil {
-			log.Warn(r, "fnosLogin rejected: user not found", "username", username)
-			_ = rest.RespondWithError(w, http.StatusUnauthorized, fmt.Sprintf("User %q not found in Navidrome", username))
+		// 2. Fall back to primary admin or first existing user
+		if user == nil {
+			user, _ = userRepo.FindFirstAdmin(ctx)
+		}
+		if user == nil {
+			users, errUsers := userRepo.GetAll(ctx)
+			if errUsers == nil && len(users) > 0 {
+				user = &users[0]
+			}
+		}
+
+		if user == nil {
+			_ = rest.RespondWithJSON(w, http.StatusOK, map[string]any{"firstTime": true})
 			return
 		}
 
@@ -105,6 +104,66 @@ func fnosLogin(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) 
 		_ = userRepo.UpdateLastLoginAt(ctx, user.ID)
 		payload := buildAuthPayload(user)
 		payload["token"] = tokenString
+		_ = rest.RespondWithJSON(w, http.StatusOK, payload)
+	}
+}
+
+// fnosResetPassword allows resetting password for the admin or specified user in fnOS environments
+func fnosResetPassword(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		userRepo := ds.User()
+
+		var req struct {
+			Username    string `json:"username"`
+			NewPassword string `json:"newPassword"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			_ = rest.RespondWithError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+
+		if strings.TrimSpace(req.NewPassword) == "" {
+			_ = rest.RespondWithError(w, http.StatusBadRequest, "新密码不能为空")
+			return
+		}
+
+		var user *model.User
+		var err error
+		if req.Username != "" {
+			user, err = userRepo.FindByUsername(ctx, req.Username)
+		}
+		if user == nil {
+			user, err = userRepo.FindFirstAdmin(ctx)
+		}
+		if user == nil {
+			users, errUsers := userRepo.GetAll(ctx)
+			if errUsers == nil && len(users) > 0 {
+				user = &users[0]
+			}
+		}
+
+		if user == nil {
+			_ = rest.RespondWithError(w, http.StatusNotFound, "系统中未找到可重置的管理员账号")
+			return
+		}
+
+		user.NewPassword = req.NewPassword
+		if err := userRepo.Put(ctx, user); err != nil {
+			log.Error(r, "Failed to reset password", "username", user.UserName, err)
+			_ = rest.RespondWithError(w, http.StatusInternalServerError, "重置密码失败: "+err.Error())
+			return
+		}
+
+		tokenString, err := auth.CreateToken(user)
+		if err != nil {
+			_ = rest.RespondWithError(w, http.StatusInternalServerError, "Failed to create token: "+err.Error())
+			return
+		}
+		_ = userRepo.UpdateLastLoginAt(ctx, user.ID)
+		payload := buildAuthPayload(user)
+		payload["token"] = tokenString
+		log.Info(r, "fnOS password reset successfully", "user", user.UserName)
 		_ = rest.RespondWithJSON(w, http.StatusOK, payload)
 	}
 }

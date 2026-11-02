@@ -37,7 +37,12 @@ func (api *Router) routes() http.Handler {
 	// Sources management
 	r.Get("/sources", api.handleGetSources)
 	r.Post("/sources/upload", api.handleUploadSource)
+	r.Post("/sources/import-url", api.handleImportURL)
 	r.Post("/sources/activate", api.handleActivateSource)
+	r.Post("/sources/{id}/activate", api.handleActivateSource)
+	r.Delete("/sources/{id}", api.handleDeleteSource)
+	r.Post("/sources/{id}/check-update", api.handleCheckUpdate)
+	r.Post("/sources/ping", api.handlePing)
 
 	// Online music exploration
 	r.Get("/search", api.handleSearch)
@@ -58,15 +63,36 @@ func (api *Router) routes() http.Handler {
 
 func (api *Router) handleGetSources(w http.ResponseWriter, r *http.Request) {
 	meta := api.engine.GetActiveScriptMeta()
-	sources := make([]SourceScriptMeta, 0)
-	if meta != nil {
-		sources = append(sources, *meta)
-	}
+	sources := api.engine.GetAllScripts()
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"active":  meta,
 		"sources": sources,
+	})
+}
+
+func (api *Router) handleImportURL(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	meta, err := api.engine.ImportScriptFromURL(r.Context(), req.URL)
+	if err != nil {
+		log.Error(r.Context(), "MusicEngine: Import from URL failed", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"meta":    meta,
+		"sources": api.engine.GetAllScripts(),
 	})
 }
 
@@ -78,15 +104,14 @@ func (api *Router) handleUploadSource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Script      string `json:"script"`
+		Name            string `json:"name"`
+		Description     string `json:"description"`
+		Script          string `json:"script"`
+		SubscriptionURL string `json:"subscriptionUrl"`
 	}
 
 	if err := json.Unmarshal(body, &req); err != nil {
-		// Try raw text if json fails
 		req.Script = string(body)
-		req.Name = "User Script"
 	}
 
 	if strings.TrimSpace(req.Script) == "" {
@@ -94,25 +119,97 @@ func (api *Router) handleUploadSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scriptID := "custom_script"
-	if err := api.engine.ActivateScript(req.Script, scriptID, req.Name, req.Description); err != nil {
-		log.Error(r.Context(), "MusicEngine: Failed to activate uploaded script", err)
-		http.Error(w, "Script activation failed: "+err.Error(), http.StatusBadRequest)
+	meta, err := api.engine.ImportScript(req.Script, req.SubscriptionURL)
+	if err != nil {
+		log.Error(r.Context(), "MusicEngine: Script import failed", err)
+		http.Error(w, "Script import failed: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"success": true,
-		"meta":    api.engine.GetActiveScriptMeta(),
+		"meta":    meta,
+		"sources": api.engine.GetAllScripts(),
 	})
 }
 
 func (api *Router) handleActivateSource(w http.ResponseWriter, r *http.Request) {
-	// Re-load or switch script
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		var req struct {
+			ID string `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		id = req.ID
+	}
+
+	if id != "" {
+		if err := api.engine.ActivateScriptByID(id); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
 	meta := api.engine.GetActiveScriptMeta()
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "meta": meta})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"meta":    meta,
+		"sources": api.engine.GetAllScripts(),
+	})
+}
+
+func (api *Router) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, "Missing script ID", http.StatusBadRequest)
+		return
+	}
+
+	if err := api.engine.DeleteScript(id); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"sources": api.engine.GetAllScripts(),
+	})
+}
+
+func (api *Router) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		http.Error(w, "Missing script ID", http.StatusBadRequest)
+		return
+	}
+
+	hasUpdate, newVer, err := api.engine.CheckUpdate(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"hasUpdate":  hasUpdate,
+		"newVersion": newVer,
+	})
+}
+
+func (api *Router) handlePing(w http.ResponseWriter, r *http.Request) {
+	results, err := api.engine.PingPlatforms(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"results": results,
+	})
 }
 
 func (api *Router) handleSearch(w http.ResponseWriter, r *http.Request) {
