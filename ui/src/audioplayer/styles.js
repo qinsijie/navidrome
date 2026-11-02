@@ -40,7 +40,7 @@ const useStyle = makeStyles(
       '& .hide-panel': {
         display: 'none !important',
       },
-      '& .music-player-panel': {
+      '& .music-player-panel, & .react-jinke-music-player-main .music-player-panel, & .react-jinke-music-player-main.light-theme .music-player-panel, & .react-jinke-music-player-main.dark-theme .music-player-panel': {
         position: 'fixed !important',
         bottom: '0 !important',
         left: '0 !important',
@@ -53,13 +53,13 @@ const useStyle = makeStyles(
             : '0 -4px 24px rgba(0, 0, 0, 0.08) !important',
         backgroundColor:
           theme.palette.type === 'dark'
-            ? 'rgba(20, 20, 22, 0.82) !important'
-            : 'rgba(255, 255, 255, 0.82) !important',
-        backdropFilter: 'blur(16px) saturate(180%) !important',
-        WebkitBackdropFilter: 'blur(16px) saturate(180%) !important',
+            ? 'rgba(20, 20, 24, 0.45) !important'
+            : 'rgba(255, 255, 255, 0.45) !important',
+        backdropFilter: 'blur(20px) saturate(180%) !important',
+        WebkitBackdropFilter: 'blur(20px) saturate(180%) !important',
         borderTop:
           theme.palette.type === 'dark'
-            ? '1px solid rgba(255, 255, 255, 0.08) !important'
+            ? '1px solid rgba(255, 255, 255, 0.12) !important'
             : '1px solid rgba(0, 0, 0, 0.08) !important',
         color: `${theme.palette.text.primary} !important`,
         transition: 'background-color 0.3s ease, border-color 0.3s ease !important',
@@ -72,6 +72,7 @@ const useStyle = makeStyles(
         justifyContent: 'space-between !important',
         padding: '0 24px !important',
         boxSizing: 'border-box !important',
+        backgroundColor: 'transparent !important',
       },
       '& .music-player-panel .panel-content .img-content': {
         width: '48px !important',

@@ -112,6 +112,9 @@ func InjectPolyfills(vm *goja.Runtime) error {
 	// 7. Timers
 	injectTimers(vm)
 
+	// 8. LX Music Native SDK (globalThis.lx)
+	injectLXSDK(vm)
+
 	return nil
 }
 
@@ -185,13 +188,53 @@ func injectCrypto(vm *goja.Runtime) {
 	_ = cryptoObj.Set("rsa", rsaObj)
 
 	_ = vm.Set("crypto", cryptoObj)
+}
 
-	// Also expose on lx.utils.crypto if required by LX scripts
-	lxObj := vm.NewObject()
-	utilsObj := vm.NewObject()
-	_ = utilsObj.Set("crypto", cryptoObj)
-	_ = lxObj.Set("utils", utilsObj)
-	_ = vm.Set("lx", lxObj)
+func injectLXSDK(vm *goja.Runtime) {
+	lxScript := `
+		(function() {
+			globalThis._lx_events = {};
+			globalThis._lx_initedData = null;
+			var EVENT_NAMES = {
+				request: 'request',
+				inited: 'inited',
+				updateAlert: 'updateAlert'
+			};
+			globalThis.lx = {
+				EVENT_NAMES: EVENT_NAMES,
+				env: 'mobile',
+				version: '2.0.0',
+				on: function(name, handler) {
+					globalThis._lx_events[name] = handler;
+				},
+				send: function(name, data) {
+					if (name === 'inited') {
+						globalThis._lx_initedData = data;
+					}
+				},
+				request: function(url, options, callback) {
+					if (typeof options === 'function') {
+						callback = options;
+						options = {};
+					}
+					fetch(url, options).then(function(resp) {
+						return resp.text().then(function(t) {
+							callback(null, { statusCode: resp.status, headers: resp.headers, body: t }, t);
+						});
+					}).catch(function(err) {
+						callback(err, null, null);
+					});
+				},
+				utils: {
+					crypto: globalThis.crypto || {},
+					buffer: {
+						from: function(data, enc) { return data; }
+					}
+				}
+			};
+		})();
+	`
+	_, _ = vm.RunString(lxScript)
 }
 
 func injectFetch(vm *goja.Runtime) {

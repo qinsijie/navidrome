@@ -149,6 +149,20 @@ func (e *MusicEngine) callScriptGetMusicUrl(ctx context.Context, state *EngineSt
 		// Look up apis[source].getMusicUrl or lx.getMusicUrl
 		script := fmt.Sprintf(`
 			(function() {
+				if (typeof globalThis._lx_events !== 'undefined' && typeof globalThis._lx_events.request === 'function') {
+					return globalThis._lx_events.request({
+						action: 'musicUrl',
+						source: '%s',
+						info: {
+							type: '%s',
+							musicInfo: {
+								id: '%s',
+								songmid: '%s',
+								hash: '%s'
+							}
+						}
+					});
+				}
 				if (typeof global.lxMusicSdk !== 'undefined' && global.lxMusicSdk['%s']) {
 					return global.lxMusicSdk['%s'].getMusicUrl({ id: '%s' }, '%s');
 				}
@@ -157,7 +171,7 @@ func (e *MusicEngine) callScriptGetMusicUrl(ctx context.Context, state *EngineSt
 				}
 				return null;
 			})()
-		`, source, source, songID, quality, source, songID, quality)
+		`, source, quality, songID, songID, songID, source, source, songID, quality, source, songID, quality)
 
 		res, err := vm.RunString(script)
 		if err != nil {
@@ -447,13 +461,37 @@ func (e *MusicEngine) ImportScript(content string, subscriptionURL string) (*Sou
 	if err != nil {
 		return nil, fmt.Errorf("testing script runtime failed: %w", err)
 	}
-	_ = testWorker // GC
 
 	// 3. Extract metadata
 	meta := ExtractScriptMetadata(content)
 	if subscriptionURL != "" {
 		meta.SubscriptionURL = subscriptionURL
 	}
+
+	// Extract sources & qualities from _lx_initedData if available
+	if initedVal := testWorker.vm.Get("_lx_initedData"); initedVal != nil && !goja.IsUndefined(initedVal) && !goja.IsNull(initedVal) {
+		if initedMap, ok := initedVal.Export().(map[string]any); ok {
+			if srcMap, ok := initedMap["sources"].(map[string]any); ok && len(srcMap) > 0 {
+				var sources []string
+				qualitiesMap := make(map[string][]string)
+				for k, v := range srcMap {
+					sources = append(sources, k)
+					if itemMap, ok := v.(map[string]any); ok {
+						if qList, ok := itemMap["qualitys"].([]any); ok {
+							for _, q := range qList {
+								qualitiesMap[k] = append(qualitiesMap[k], fmt.Sprint(q))
+							}
+						}
+					}
+				}
+				if len(sources) > 0 {
+					meta.Sources = sources
+					meta.Qualities = qualitiesMap
+				}
+			}
+		}
+	}
+	_ = testWorker // GC
 	meta.IsActive = true
 	meta.UpdatedAt = time.Now()
 

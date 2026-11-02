@@ -203,7 +203,7 @@ export const SourceSettings = () => {
         setSources(res.sources || [])
       }
     } catch (err) {
-      setErrorMsg('网络导入失败: ' + err.message)
+      setErrorMsg('网络导入失败: ' + (err.body || err.message))
     } finally {
       setImportingUrl(false)
     }
@@ -223,7 +223,7 @@ export const SourceSettings = () => {
           setSources(res.sources || [])
         }
       } catch (err) {
-        setErrorMsg('本地脚本解析失败: ' + err.message)
+        setErrorMsg('本地脚本导入失败: ' + (err.body || err.message))
       }
     }
     reader.readAsText(file)
