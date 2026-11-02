@@ -53,14 +53,14 @@ const useStyle = makeStyles(
             : '0 -4px 24px rgba(0, 0, 0, 0.08) !important',
         backgroundColor:
           theme.palette.type === 'dark'
-            ? 'rgba(20, 20, 24, 0.45) !important'
-            : 'rgba(255, 255, 255, 0.45) !important',
-        backdropFilter: 'blur(20px) saturate(180%) !important',
-        WebkitBackdropFilter: 'blur(20px) saturate(180%) !important',
+            ? 'rgba(18, 18, 22, 0.22) !important'
+            : 'rgba(255, 255, 255, 0.25) !important',
+        backdropFilter: 'blur(24px) saturate(200%) !important',
+        WebkitBackdropFilter: 'blur(24px) saturate(200%) !important',
         borderTop:
           theme.palette.type === 'dark'
-            ? '1px solid rgba(255, 255, 255, 0.12) !important'
-            : '1px solid rgba(0, 0, 0, 0.08) !important',
+            ? '1px solid rgba(255, 255, 255, 0.08) !important'
+            : '1px solid rgba(0, 0, 0, 0.06) !important',
         color: `${theme.palette.text.primary} !important`,
         transition: 'background-color 0.3s ease, border-color 0.3s ease !important',
         transform: 'none !important',
@@ -122,14 +122,6 @@ const useStyle = makeStyles(
       },
       '& .play-mode-title': {
         'pointer-events': 'none',
-      },
-      '& .music-player-panel .panel-content div.img-rotate': {
-        // Customize desktop player when cover animation is disabled
-        animationDuration: (props) => !props.enableCoverAnimation && '0s',
-        borderRadius: (props) => !props.enableCoverAnimation && '0',
-        // Fix cover display when image is not square
-        backgroundSize: 'contain',
-        backgroundPosition: 'center',
       },
       '& .react-jinke-music-player-mobile .react-jinke-music-player-mobile-cover':
         {

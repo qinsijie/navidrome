@@ -6,6 +6,12 @@ export const searchOnline = async (source, query, page = 1, limit = 30) => {
   return response.json
 }
 
+export const getSearchTips = async (query) => {
+  const url = `/api/musicengine/search/tips?query=${encodeURIComponent(query)}`
+  const response = await httpClient(url)
+  return response.json
+}
+
 export const ensureShadowTrack = async (track) => {
   const response = await httpClient('/api/musicengine/shadow', {
     method: 'POST',

@@ -46,8 +46,10 @@ func (api *Router) routes() http.Handler {
 
 	// Online music exploration
 	r.Get("/search", api.handleSearch)
+	r.Get("/search/tips", api.handleSearchTips)
 	r.Get("/songlists", api.handleGetSonglists)
 	r.Get("/songlist", api.handleGetSonglistDetail)
+	r.Get("/playlists/detail", api.handleGetSonglistDetail)
 	r.Get("/leaderboards", api.handleGetLeaderboards)
 	r.Get("/leaderboard", api.handleGetLeaderboardDetail)
 
@@ -236,6 +238,19 @@ func (api *Router) handleSearch(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
+func (api *Router) handleSearchTips(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("query")
+	tips, err := GetSearchTips(r.Context(), query)
+	if err != nil {
+		tips = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"query": query,
+		"tips":  tips,
+	})
+}
+
 func (api *Router) handleGetSonglists(w http.ResponseWriter, r *http.Request) {
 	// Return curated default songlists or call script if supported
 	source := r.URL.Query().Get("source")
@@ -244,10 +259,10 @@ func (api *Router) handleGetSonglists(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lists := []*SongList{
-		{ID: "3778678", Source: source, Title: "云音乐热歌榜", Author: "网易云音乐"},
-		{ID: "19723756", Source: source, Title: "云音乐飙升榜", Author: "网易云音乐"},
-		{ID: "3779629", Source: source, Title: "云音乐新歌榜", Author: "网易云音乐"},
-		{ID: "2884035", Source: source, Title: "网易原创歌曲榜", Author: "网易云音乐"},
+		{ID: "3778678", Source: source, Title: "云音乐热歌榜", Author: "网易云音乐", CoverURL: "https://p2.music.126.net/GH3tAYgt2G1J94z_Q6n9kw==/109951167909386407.jpg"},
+		{ID: "19723756", Source: source, Title: "云音乐飙升榜", Author: "网易云音乐", CoverURL: "https://p2.music.126.net/N2HO5xfYEqyvzyqISslaac==/109951166962389879.jpg"},
+		{ID: "3779629", Source: source, Title: "云音乐新歌榜", Author: "网易云音乐", CoverURL: "https://p2.music.126.net/wP7Uqnqnqn0q--95z8Q0ww==/109951166962377050.jpg"},
+		{ID: "2884035", Source: source, Title: "网易原创歌曲榜", Author: "网易云音乐", CoverURL: "https://p2.music.126.net/sBzD11nforcuh1jdLSgX7g==/18740076185638788.jpg"},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -264,11 +279,14 @@ func (api *Router) handleGetSonglistDetail(w http.ResponseWriter, r *http.Reques
 	}
 	id := r.URL.Query().Get("id")
 
-	detail := &SongListDetail{
-		ID:     id,
-		Source: source,
-		Title:  "精选歌单",
-		List:   make([]*OnlineTrack, 0),
+	detail, err := GetSonglistDetailNative(r.Context(), source, id)
+	if err != nil && detail == nil {
+		detail = &SongListDetail{
+			ID:     id,
+			Source: source,
+			Title:  "精选歌单",
+			List:   make([]*OnlineTrack, 0),
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -282,10 +300,10 @@ func (api *Router) handleGetLeaderboards(w http.ResponseWriter, r *http.Request)
 	}
 
 	boards := []*Leaderboard{
-		{ID: "hot", Source: source, Name: "热歌榜"},
-		{ID: "soar", Source: source, Name: "飙升榜"},
-		{ID: "new", Source: source, Name: "新歌榜"},
-		{ID: "origin", Source: source, Name: "原创榜"},
+		{ID: "3778678", Source: source, Name: "热歌榜", CoverURL: "https://p2.music.126.net/GH3tAYgt2G1J94z_Q6n9kw==/109951167909386407.jpg"},
+		{ID: "19723756", Source: source, Name: "飙升榜", CoverURL: "https://p2.music.126.net/N2HO5xfYEqyvzyqISslaac==/109951166962389879.jpg"},
+		{ID: "3779629", Source: source, Name: "新歌榜", CoverURL: "https://p2.music.126.net/wP7Uqnqnqn0q--95z8Q0ww==/109951166962377050.jpg"},
+		{ID: "2884035", Source: source, Name: "原创榜", CoverURL: "https://p2.music.126.net/sBzD11nforcuh1jdLSgX7g==/18740076185638788.jpg"},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -302,11 +320,17 @@ func (api *Router) handleGetLeaderboardDetail(w http.ResponseWriter, r *http.Req
 	}
 	id := r.URL.Query().Get("id")
 
+	songlistDetail, err := GetSonglistDetailNative(r.Context(), source, id)
 	detail := &LeaderboardDetail{
 		ID:     id,
 		Source: source,
 		Name:   "排行榜",
 		List:   make([]*OnlineTrack, 0),
+	}
+	if err == nil && songlistDetail != nil {
+		detail.Name = songlistDetail.Title
+		detail.CoverURL = songlistDetail.CoverURL
+		detail.List = songlistDetail.List
 	}
 
 	w.Header().Set("Content-Type", "application/json")

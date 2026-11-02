@@ -230,11 +230,6 @@ func extractResolvedStream(val goja.Value) *ResolvedStream {
 
 // Search queries online songs across sources
 func (e *MusicEngine) Search(ctx context.Context, source, query string, page, limit int) (*SearchResult, error) {
-	state := e.state.Load()
-	if state == nil || state.pool == nil {
-		return nil, errors.New("music engine has no active source script configured")
-	}
-
 	if limit <= 0 {
 		limit = 30
 	}
@@ -242,31 +237,45 @@ func (e *MusicEngine) Search(ctx context.Context, source, query string, page, li
 		page = 1
 	}
 
-	val, err := state.pool.ExecuteWithTimeout(ctx, 12*time.Second, func(vm *goja.Runtime) (any, error) {
-		script := fmt.Sprintf(`
-			(function() {
-				if (typeof global.lxMusicSdk !== 'undefined' && global.lxMusicSdk['%s'] && global.lxMusicSdk['%s'].musicSearch) {
-					return global.lxMusicSdk['%s'].musicSearch.search('%s', %d, %d);
-				}
-				if (typeof global.userApi !== 'undefined' && global.userApi.search) {
-					return global.userApi.search('%s', '%s', %d, %d);
-				}
-				return null;
-			})()
-		`, source, source, source, query, page, limit, source, query, page, limit)
-
-		res, err := vm.RunString(script)
-		if err != nil {
-			return nil, err
-		}
-
-		return parseSearchResult(source, page, limit, res), nil
-	})
-
-	if err != nil {
-		return nil, err
+	// 1. Try native high-performance search first
+	res, err := SearchNative(ctx, source, query, page, limit)
+	if err == nil && res != nil && len(res.List) > 0 {
+		return res, nil
 	}
-	return val.(*SearchResult), nil
+
+	// 2. Fall back to script pool if available
+	state := e.state.Load()
+	if state != nil && state.pool != nil {
+		val, poolErr := state.pool.ExecuteWithTimeout(ctx, 12*time.Second, func(vm *goja.Runtime) (any, error) {
+			script := fmt.Sprintf(`
+				(function() {
+					if (typeof global.lxMusicSdk !== 'undefined' && global.lxMusicSdk['%s'] && global.lxMusicSdk['%s'].musicSearch) {
+						return global.lxMusicSdk['%s'].musicSearch.search('%s', %d, %d);
+					}
+					if (typeof global.userApi !== 'undefined' && global.userApi.search) {
+						return global.userApi.search('%s', '%s', %d, %d);
+					}
+					return null;
+				})()
+			`, source, source, source, query, page, limit, source, query, page, limit)
+
+			sRes, sErr := vm.RunString(script)
+			if sErr != nil {
+				return nil, sErr
+			}
+			return parseSearchResult(source, page, limit, sRes), nil
+		})
+		if poolErr == nil && val != nil {
+			if sRes, ok := val.(*SearchResult); ok && len(sRes.List) > 0 {
+				return sRes, nil
+			}
+		}
+	}
+
+	if res != nil {
+		return res, nil
+	}
+	return &SearchResult{Source: source, Page: page, Limit: limit, List: make([]*OnlineTrack, 0)}, err
 }
 
 func parseSearchResult(source string, page, limit int, val goja.Value) *SearchResult {

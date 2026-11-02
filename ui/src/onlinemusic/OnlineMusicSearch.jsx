@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useDispatch } from 'react-redux'
 import {
   Card,
@@ -7,88 +7,186 @@ import {
   TextField,
   Tabs,
   Tab,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
   IconButton,
   Tooltip,
   CircularProgress,
   makeStyles,
   Box,
+  Button,
+  Menu,
+  MenuItem,
+  Paper,
+  ClickAwayListener,
+  List,
+  ListItem,
+  ListItemText,
+  ListItemIcon,
 } from '@material-ui/core'
 import PlayArrowIcon from '@material-ui/icons/PlayArrow'
 import PlaylistAddIcon from '@material-ui/icons/PlaylistAdd'
 import QueueMusicIcon from '@material-ui/icons/QueueMusic'
 import SearchIcon from '@material-ui/icons/Search'
+import ClearIcon from '@material-ui/icons/Clear'
+import MoreVertIcon from '@material-ui/icons/MoreVert'
+import ArrowDropDownIcon from '@material-ui/icons/ArrowDropDown'
 import { playTracks, addTracks, openAddToPlaylist } from '../actions'
-import { searchOnline, ensureShadowTrack } from './api'
-import QualityBadge from './QualityBadge'
+import { searchOnline, ensureShadowTrack, getSearchTips } from './api'
+import { QualityBadge, SourceBadge } from './QualityBadge'
 
 const useStyles = makeStyles((theme) => ({
   root: {
     padding: theme.spacing(3),
-    maxWidth: 1400,
+    maxWidth: 1200,
     margin: '0 auto',
   },
-  searchBar: {
-    marginBottom: theme.spacing(2),
-  },
-  sourceTabs: {
+  topBar: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: theme.spacing(2),
     borderBottom: `1px solid ${theme.palette.divider}`,
+    paddingBottom: theme.spacing(1),
   },
-  table: {
-    minWidth: 650,
+  searchRow: {
+    display: 'flex',
+    alignItems: 'center',
+    position: 'relative',
+    marginBottom: theme.spacing(2),
+    gap: theme.spacing(1.5),
   },
-  row: {
+  sourceSelectBtn: {
+    textTransform: 'none',
+    fontWeight: 600,
+    minWidth: 120,
+    fontSize: '0.95rem',
+    height: 48,
+    border: `1px solid ${theme.palette.divider}`,
+    borderRadius: 8,
+  },
+  searchBoxContainer: {
+    position: 'relative',
+    flex: 1,
+  },
+  searchInput: {
+    '& .MuiOutlinedInput-root': {
+      borderRadius: 8,
+      height: 48,
+    },
+  },
+  tipsPaper: {
+    position: 'absolute',
+    top: 52,
+    left: 0,
+    right: 0,
+    zIndex: 1200,
+    maxHeight: 280,
+    overflowY: 'auto',
+    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.15)',
+    border: `1px solid ${theme.palette.divider}`,
+    borderRadius: 8,
+  },
+  tipItem: {
+    paddingTop: 8,
+    paddingBottom: 8,
+    cursor: 'pointer',
     '&:hover': {
       backgroundColor: theme.palette.action.hover,
     },
   },
-  trackTitle: {
-    fontWeight: 600,
-    color: theme.palette.text.primary,
+  trackList: {
+    padding: 0,
   },
-  artistName: {
+  trackItem: {
+    display: 'flex',
+    alignItems: 'center',
+    padding: '12px 16px',
+    borderRadius: 8,
+    borderBottom: `1px solid ${theme.palette.divider}`,
+    transition: 'background-color 0.15s ease',
+    cursor: 'pointer',
+    '&:hover': {
+      backgroundColor: theme.palette.action.hover,
+    },
+  },
+  indexCol: {
+    width: 36,
+    textAlign: 'center',
     color: theme.palette.text.secondary,
     fontSize: '0.875rem',
+    marginRight: 12,
+  },
+  trackMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  trackTitle: {
+    fontWeight: 600,
+    fontSize: '0.95rem',
+    color: theme.palette.text.primary,
+    marginBottom: 3,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  trackMeta: {
+    display: 'flex',
+    alignItems: 'center',
+    fontSize: '0.8rem',
+    color: theme.palette.text.secondary,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  durationCol: {
+    color: theme.palette.text.secondary,
+    fontSize: '0.85rem',
+    marginRight: 12,
   },
   loadingContainer: {
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: theme.spacing(6),
+    padding: theme.spacing(8),
   },
   emptyContainer: {
     textAlign: 'center',
-    padding: theme.spacing(6),
+    padding: theme.spacing(8),
     color: theme.palette.text.secondary,
-  },
-  actionCell: {
-    whiteSpace: 'nowrap',
-    width: 140,
   },
 }))
 
-const SOURCES = [
-  { id: 'wy', label: '网易云音乐' },
-  { id: 'tx', label: 'QQ 音乐' },
-  { id: 'kg', label: '酷狗音乐' },
-  { id: 'kw', label: '酷我音乐' },
-  { id: 'mg', label: '咪咕音乐' },
+const SOURCE_OPTIONS = [
+  { id: 'all', label: '聚合大会' },
+  { id: 'kw', label: '小蜗音乐' },
+  { id: 'kg', label: '小构音乐' },
+  { id: 'tx', label: '小秋音乐' },
+  { id: 'wy', label: '小芸音乐' },
+  { id: 'mg', label: '小蜜音乐' },
 ]
 
 export const OnlineMusicSearch = () => {
   const classes = useStyles()
   const dispatch = useDispatch()
-  const [source, setSource] = useState('wy')
+
+  const [source, setSource] = useState('all')
   const [keyword, setKeyword] = useState('')
+  const [tabType, setTabType] = useState('songs')
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState([])
   const [actingId, setActingId] = useState(null)
+
+  // Source selection menu
+  const [sourceAnchorEl, setSourceAnchorEl] = useState(null)
+
+  // Tips autocomplete
+  const [tips, setTips] = useState([])
+  const [showTips, setShowTips] = useState(false)
+
+  // Track action menu
+  const [menuAnchorEl, setMenuAnchorEl] = useState(null)
+  const [activeMenuTrack, setActiveMenuTrack] = useState(null)
+
+  const searchBoxRef = useRef(null)
 
   const doSearch = useCallback(
     async (src, query) => {
@@ -101,6 +199,7 @@ export const OnlineMusicSearch = () => {
         const res = await searchOnline(src, query.trim(), 1, 30)
         setResults(res.list || [])
       } catch (err) {
+        // eslint-disable-next-line no-console
         console.error('Search error:', err)
         setResults([])
       } finally {
@@ -110,20 +209,52 @@ export const OnlineMusicSearch = () => {
     [],
   )
 
-  // 300ms debounce
+  // 150ms debounced search tips
   useEffect(() => {
-    const handler = setTimeout(() => {
+    if (!keyword || keyword.trim() === '') {
+      setTips([])
+      setShowTips(false)
+      return
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await getSearchTips(keyword.trim())
+        if (res && res.tips && res.tips.length > 0) {
+          setTips(res.tips)
+          setShowTips(true)
+        } else {
+          setTips([])
+          setShowTips(false)
+        }
+      } catch (e) {
+        setTips([])
+      }
+    }, 150)
+
+    return () => clearTimeout(timer)
+  }, [keyword])
+
+  const handleSelectTip = (tip) => {
+    setKeyword(tip)
+    setShowTips(false)
+    doSearch(source, tip)
+  }
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      setShowTips(false)
       if (keyword.trim()) {
         doSearch(source, keyword)
       }
-    }, 300)
-    return () => clearTimeout(handler)
-  }, [keyword, source, doSearch])
+    }
+  }
 
-  const handleSourceChange = (event, newSource) => {
-    setSource(newSource)
+  const handleSelectSource = (sId) => {
+    setSource(sId)
+    setSourceAnchorEl(null)
     if (keyword.trim()) {
-      doSearch(newSource, keyword)
+      doSearch(sId, keyword)
     }
   }
 
@@ -131,10 +262,11 @@ export const OnlineMusicSearch = () => {
     if (!sec || isNaN(sec)) return '--:--'
     const m = Math.floor(sec / 60)
     const s = Math.floor(sec % 60)
-    return `${m}:${s < 10 ? '0' : ''}${s}`
+    return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`
   }
 
-  const handlePlay = async (track) => {
+  const handlePlay = async (track, e) => {
+    if (e) e.stopPropagation()
     setActingId(track.id)
     try {
       const res = await ensureShadowTrack(track)
@@ -143,13 +275,15 @@ export const OnlineMusicSearch = () => {
         dispatch(playTracks({ [mf.id]: mf }, [mf.id], mf.id))
       }
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error('Failed to play online track:', err)
     } finally {
       setActingId(null)
     }
   }
 
-  const handleAddToQueue = async (track) => {
+  const handleAddToQueue = async (track, e) => {
+    if (e) e.stopPropagation()
     setActingId(track.id)
     try {
       const res = await ensureShadowTrack(track)
@@ -158,13 +292,15 @@ export const OnlineMusicSearch = () => {
         dispatch(addTracks({ [mf.id]: mf }, [mf.id]))
       }
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error('Failed to add to queue:', err)
     } finally {
       setActingId(null)
     }
   }
 
-  const handleAddToPlaylist = async (track) => {
+  const handleAddToPlaylist = async (track, e) => {
+    if (e) e.stopPropagation()
     setActingId(track.id)
     try {
       const res = await ensureShadowTrack(track)
@@ -172,124 +308,229 @@ export const OnlineMusicSearch = () => {
         dispatch(openAddToPlaylist({ selectedIds: [res.mediaFile.id] }))
       }
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error('Failed to add to playlist:', err)
     } finally {
       setActingId(null)
     }
   }
 
+  const currentSourceLabel =
+    SOURCE_OPTIONS.find((s) => s.id === source)?.label || '聚合大会'
+
   return (
     <div className={classes.root}>
       <Card>
         <CardContent>
-          <Box display="flex" alignItems="center" mb={2}>
-            <SearchIcon style={{ marginRight: 8, color: '#10B981' }} />
-            <Typography variant="h6">网络音乐聚合搜索</Typography>
-          </Box>
+          <div className={classes.topBar}>
+            <Box display="flex" alignItems="center">
+              <SearchIcon style={{ marginRight: 8, color: '#3B82F6' }} />
+              <Typography variant="h6">音乐搜索</Typography>
+            </Box>
 
-          <TextField
-            className={classes.searchBar}
-            fullWidth
-            variant="outlined"
-            placeholder="搜索歌曲、歌手、专辑..."
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-          />
+            <Tabs
+              value={tabType}
+              onChange={(e, val) => setTabType(val)}
+              indicatorColor="primary"
+              textColor="primary"
+            >
+              <Tab value="songs" label="歌曲" />
+              <Tab value="playlists" label="歌单" />
+            </Tabs>
+          </div>
 
-          <Tabs
-            value={source}
-            onChange={handleSourceChange}
-            indicatorColor="primary"
-            textColor="primary"
-            className={classes.sourceTabs}
-          >
-            {SOURCES.map((s) => (
-              <Tab key={s.id} value={s.id} label={s.label} />
-            ))}
-          </Tabs>
+          <div className={classes.searchRow}>
+            {/* Category Dropdown (default: 聚合大会) */}
+            <Button
+              className={classes.sourceSelectBtn}
+              variant="outlined"
+              onClick={(e) => setSourceAnchorEl(e.currentTarget)}
+              endIcon={<ArrowDropDownIcon />}
+            >
+              {currentSourceLabel}
+            </Button>
+            <Menu
+              anchorEl={sourceAnchorEl}
+              open={Boolean(sourceAnchorEl)}
+              onClose={() => setSourceAnchorEl(null)}
+            >
+              {SOURCE_OPTIONS.map((opt) => (
+                <MenuItem
+                  key={opt.id}
+                  selected={opt.id === source}
+                  onClick={() => handleSelectSource(opt.id)}
+                  style={{
+                    fontWeight: opt.id === source ? 700 : 400,
+                    color: opt.id === source ? '#3B82F6' : 'inherit',
+                  }}
+                >
+                  {opt.label}
+                </MenuItem>
+              ))}
+            </Menu>
 
+            {/* Input with real-time tips */}
+            <div className={classes.searchBoxContainer} ref={searchBoxRef}>
+              <TextField
+                className={classes.searchInput}
+                fullWidth
+                variant="outlined"
+                placeholder="搜索歌曲、歌手、专辑..."
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                onKeyDown={handleKeyDown}
+                onFocus={() => tips.length > 0 && setShowTips(true)}
+                InputProps={{
+                  endAdornment: keyword ? (
+                    <IconButton
+                      size="small"
+                      onClick={() => {
+                        setKeyword('')
+                        setTips([])
+                        setShowTips(false)
+                      }}
+                    >
+                      <ClearIcon fontSize="small" />
+                    </IconButton>
+                  ) : (
+                    <IconButton
+                      size="small"
+                      onClick={() => {
+                        setShowTips(false)
+                        doSearch(source, keyword)
+                      }}
+                    >
+                      <SearchIcon fontSize="small" />
+                    </IconButton>
+                  ),
+                }}
+              />
+
+              {showTips && tips.length > 0 && (
+                <ClickAwayListener onClickAway={() => setShowTips(false)}>
+                  <Paper className={classes.tipsPaper}>
+                    <List dense>
+                      {tips.map((tip, idx) => (
+                        <ListItem
+                          key={idx}
+                          className={classes.tipItem}
+                          button
+                          onClick={() => handleSelectTip(tip)}
+                        >
+                          <ListItemIcon style={{ minWidth: 32 }}>
+                            <SearchIcon fontSize="small" color="disabled" />
+                          </ListItemIcon>
+                          <ListItemText primary={tip} />
+                        </ListItem>
+                      ))}
+                    </List>
+                  </Paper>
+                </ClickAwayListener>
+              )}
+            </div>
+          </div>
+
+          {/* Results List */}
           {loading ? (
             <div className={classes.loadingContainer}>
-              <CircularProgress size={40} />
+              <CircularProgress size={36} />
             </div>
-          ) : results.length > 0 ? (
-            <TableContainer>
-              <Table className={classes.table} size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>歌曲</TableCell>
-                    <TableCell>歌手</TableCell>
-                    <TableCell>专辑</TableCell>
-                    <TableCell align="center">音质</TableCell>
-                    <TableCell align="center">时长</TableCell>
-                    <TableCell align="right">操作</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {results.map((track) => (
-                    <TableRow key={track.id} className={classes.row}>
-                      <TableCell>
-                        <span className={classes.trackTitle}>{track.title}</span>
-                      </TableCell>
-                      <TableCell>
-                        <span className={classes.artistName}>{track.artist}</span>
-                      </TableCell>
-                      <TableCell>{track.album || '-'}</TableCell>
-                      <TableCell align="center">
-                        <QualityBadge quality={track.quality || 'flac'} />
-                      </TableCell>
-                      <TableCell align="center">
-                        {formatDuration(track.duration)}
-                      </TableCell>
-                      <TableCell align="right" className={classes.actionCell}>
-                        <Tooltip title="立即播放">
-                          <span>
-                            <IconButton
-                              size="small"
-                              onClick={() => handlePlay(track)}
-                              disabled={actingId === track.id}
-                            >
-                              <PlayArrowIcon />
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                        <Tooltip title="添加到播放队列">
-                          <span>
-                            <IconButton
-                              size="small"
-                              onClick={() => handleAddToQueue(track)}
-                              disabled={actingId === track.id}
-                            >
-                              <QueueMusicIcon />
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                        <Tooltip title="添加到自建歌单">
-                          <span>
-                            <IconButton
-                              size="small"
-                              onClick={() => handleAddToPlaylist(track)}
-                              disabled={actingId === track.id}
-                            >
-                              <PlaylistAddIcon />
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          ) : (
+          ) : results.length === 0 ? (
             <div className={classes.emptyContainer}>
               <Typography variant="body1">
-                {keyword.trim()
-                  ? '未搜索到相关曲目，请尝试切换音源平台或更换关键词'
-                  : '请输入关键词开始搜索网络高品质音乐'}
+                {keyword ? '未搜索到相关曲目，请尝试更换关键词或搜索源' : '输入关键词，回车或点击联想词即刻开搜'}
               </Typography>
             </div>
+          ) : (
+            <div className={classes.trackList}>
+              {results.map((track, idx) => (
+                <div
+                  key={track.id || idx}
+                  className={classes.trackItem}
+                  onClick={(e) => handlePlay(track, e)}
+                >
+                  <div className={classes.indexCol}>{idx + 1}</div>
+
+                  <div className={classes.trackMain}>
+                    <div className={classes.trackTitle}>{track.title}</div>
+                    <div className={classes.trackMeta}>
+                      <QualityBadge quality={track.quality || 'flac'} />
+                      <SourceBadge source={track.source} />
+                      <span>{track.artist || '未知歌手'}</span>
+                      {track.album && (
+                        <span style={{ marginLeft: 6, opacity: 0.8 }}>
+                          - {track.album}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className={classes.durationCol}>
+                    {formatDuration(track.duration)}
+                  </div>
+
+                  <IconButton
+                    size="small"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setMenuAnchorEl(e.currentTarget)
+                      setActiveMenuTrack(track)
+                    }}
+                  >
+                    {actingId === track.id ? (
+                      <CircularProgress size={18} />
+                    ) : (
+                      <MoreVertIcon fontSize="small" />
+                    )}
+                  </IconButton>
+                </div>
+              ))}
+            </div>
           )}
+
+          {/* Action Menu (⋮) */}
+          <Menu
+            anchorEl={menuAnchorEl}
+            open={Boolean(menuAnchorEl)}
+            onClose={() => {
+              setMenuAnchorEl(null)
+              setActiveMenuTrack(null)
+            }}
+          >
+            <MenuItem
+              onClick={(e) => {
+                if (activeMenuTrack) handlePlay(activeMenuTrack, e)
+                setMenuAnchorEl(null)
+              }}
+            >
+              <ListItemIcon>
+                <PlayArrowIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText primary="立即播放" />
+            </MenuItem>
+            <MenuItem
+              onClick={(e) => {
+                if (activeMenuTrack) handleAddToQueue(activeMenuTrack, e)
+                setMenuAnchorEl(null)
+              }}
+            >
+              <ListItemIcon>
+                <QueueMusicIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText primary="添加到播放队列" />
+            </MenuItem>
+            <MenuItem
+              onClick={(e) => {
+                if (activeMenuTrack) handleAddToPlaylist(activeMenuTrack, e)
+                setMenuAnchorEl(null)
+              }}
+            >
+              <ListItemIcon>
+                <PlaylistAddIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText primary="收藏到我的歌单" />
+            </MenuItem>
+          </Menu>
         </CardContent>
       </Card>
     </div>
