@@ -136,7 +136,10 @@ const Player = () => {
   useEffect(() => {
     httpClient('/api/output/devices?enabled_only=true')
       .then(({ json }) => {
-        if (json?.activeId) {
+        const localStored = localStorage.getItem('nd_active_output_device') || 'local'
+        if (localStored === 'local') {
+          setActiveOutputDevice('local')
+        } else if (json?.activeId) {
           setActiveOutputDevice(json.activeId)
           localStorage.setItem('nd_active_output_device', json.activeId)
           const activeDev = json.devices?.find((d) => d.id === json.activeId)
@@ -255,11 +258,15 @@ const Player = () => {
             },
             configurable: true,
           })
-        } catch (e) {}
+        } catch (e) {
+          // ignore
+        }
 
         try {
           audioInstance._origPause()
-        } catch (e) {}
+        } catch (e) {
+          // ignore
+        }
       } else {
         if (audioInstance._origPlay) {
           audioInstance.play = audioInstance._origPlay
@@ -267,7 +274,9 @@ const Player = () => {
         }
         try {
           delete audioInstance.currentTime
-        } catch (e) {}
+        } catch (e) {
+          // ignore
+        }
         audioInstance.muted = false
       }
     }
@@ -345,7 +354,9 @@ const Player = () => {
                 if (audioInstance && typeof audioInstance.playByIndex === 'function') {
                   try {
                     audioInstance.playByIndex(serverIdx)
-                  } catch (e) {}
+                  } catch (e) {
+                    // ignore
+                  }
                 }
               }
             }
@@ -374,7 +385,9 @@ const Player = () => {
         if (audioInstance) {
           try {
             audioInstance.dispatchEvent(new Event('timeupdate'))
-          } catch (e) {}
+          } catch (e) {
+            // ignore
+          }
         }
 
         const formatTime = (seconds) => {

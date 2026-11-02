@@ -47,6 +47,8 @@ const useStyle = makeStyles(
         width: '100vw !important',
         height: '72px !important',
         zIndex: '1300 !important',
+        paddingBottom: 'env(safe-area-inset-bottom, 0px) !important',
+        boxSizing: 'content-box !important',
         boxShadow:
           theme.palette.type === 'dark'
             ? '0 -4px 24px rgba(0, 0, 0, 0.35) !important'

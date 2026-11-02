@@ -35,9 +35,12 @@ import { QualityBadge, SourceBadge } from './QualityBadge'
 
 const useStyles = makeStyles((theme) => ({
   root: {
-    padding: theme.spacing(3),
-    maxWidth: 1200,
-    margin: '0 auto',
+    padding: theme.spacing(2, 3),
+    width: '100%',
+    maxWidth: '100%',
+    margin: 0,
+    boxSizing: 'border-box',
+    paddingBottom: 110,
   },
   topBar: {
     display: 'flex',

@@ -112,7 +112,10 @@ func InjectPolyfills(vm *goja.Runtime) error {
 	// 7. Timers
 	injectTimers(vm)
 
-	// 8. LX Music Native SDK (globalThis.lx)
+	// 8. Synchronous Native HTTP for Promise stability
+	injectNativeHttp(vm)
+
+	// 9. LX Music Native SDK (globalThis.lx)
 	injectLXSDK(vm)
 
 	return nil
@@ -190,6 +193,78 @@ func injectCrypto(vm *goja.Runtime) {
 	_ = vm.Set("crypto", cryptoObj)
 }
 
+func injectNativeHttp(vm *goja.Runtime) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	_ = vm.Set("__nativeHttpSync", func(call goja.FunctionCall) goja.Value {
+		rawURL := call.Argument(0).String()
+		opts := call.Argument(1)
+
+		method := http.MethodGet
+		headers := make(map[string]string)
+		var bodyReader io.Reader
+
+		if opts != nil && !goja.IsUndefined(opts) && !goja.IsNull(opts) {
+			optObj := opts.ToObject(vm)
+			if m := optObj.Get("method"); m != nil && !goja.IsUndefined(m) {
+				method = strings.ToUpper(m.String())
+			}
+			if h := optObj.Get("headers"); h != nil && !goja.IsUndefined(h) {
+				if hMap, ok := h.Export().(map[string]any); ok {
+					for k, v := range hMap {
+						headers[k] = fmt.Sprint(v)
+					}
+				}
+			}
+			if b := optObj.Get("body"); b != nil && !goja.IsUndefined(b) {
+				bodyReader = bytes.NewBufferString(b.String())
+			}
+		}
+
+		req, err := http.NewRequest(method, rawURL, bodyReader)
+		if err != nil {
+			errObj := vm.NewObject()
+			_ = errObj.Set("error", err.Error())
+			return errObj
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			errObj := vm.NewObject()
+			_ = errObj.Set("error", err.Error())
+			return errObj
+		}
+		defer resp.Body.Close()
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			errObj := vm.NewObject()
+			_ = errObj.Set("error", err.Error())
+			return errObj
+		}
+
+		respHeaders := vm.NewObject()
+		for k := range resp.Header {
+			_ = respHeaders.Set(k, resp.Header.Get(k))
+		}
+
+		resObj := vm.NewObject()
+		_ = resObj.Set("statusCode", resp.StatusCode)
+		_ = resObj.Set("statusMessage", resp.Status)
+		_ = resObj.Set("headers", respHeaders)
+		_ = resObj.Set("body", string(bodyBytes))
+		return resObj
+	})
+}
+
 func injectLXSDK(vm *goja.Runtime) {
 	lxScript := `
 		(function() {
@@ -216,6 +291,17 @@ func injectLXSDK(vm *goja.Runtime) {
 					if (typeof options === 'function') {
 						callback = options;
 						options = {};
+					}
+					if (typeof globalThis.__nativeHttpSync === 'function') {
+						var resp = globalThis.__nativeHttpSync(url, options || {});
+						if (resp && resp.error) {
+							callback(new Error(resp.error), null, null);
+						} else if (resp) {
+							callback(null, { statusCode: resp.statusCode, statusMessage: resp.statusMessage, headers: resp.headers, body: resp.body }, resp.body);
+						} else {
+							callback(new Error('Empty native response'), null, null);
+						}
+						return function() {};
 					}
 					fetch(url, options).then(function(resp) {
 						return resp.text().then(function(t) {

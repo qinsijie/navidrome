@@ -125,7 +125,10 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
       .then(({ json }) => {
         if (json) {
           if (json.devices) setDevices(json.devices)
-          if (json.activeId) {
+          const localStored = localStorage.getItem('nd_active_output_device') || 'local'
+          if (localStored === 'local') {
+            setActiveId('local')
+          } else if (json.activeId) {
             setActiveId(json.activeId)
             localStorage.setItem('nd_active_output_device', json.activeId)
           }
@@ -151,6 +154,23 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
   }
 
   const handleSelectDevice = (dev) => {
+    if (dev.id === 'local') {
+      // Local browser / device playback is private to current device
+      setActiveId('local')
+      localStorage.setItem('nd_active_output_device', 'local')
+      window.dispatchEvent(
+        new CustomEvent('nd:output-device-changed', { detail: { deviceId: 'local', device: dev } }),
+      )
+      // Best-effort notify server without blocking or throwing Forbidden
+      httpClient('/api/output/device', {
+        method: 'POST',
+        body: JSON.stringify({ deviceId: 'local' }),
+      }).catch(() => {})
+      notify('音频输出已切换至: 本机播放', 'info')
+      handleClose()
+      return
+    }
+
     httpClient('/api/output/device', {
       method: 'POST',
       body: JSON.stringify({ deviceId: dev.id }),

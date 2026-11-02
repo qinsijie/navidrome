@@ -11,38 +11,40 @@ import {
   Tab,
   Box,
   CircularProgress,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
   Button,
   IconButton,
   List,
   ListItem,
   ListItemText,
   ListItemSecondaryAction,
+  Paper,
 } from '@material-ui/core'
 import EmojiEventsIcon from '@material-ui/icons/EmojiEvents'
 import PlayArrowIcon from '@material-ui/icons/PlayArrow'
 import PlaylistAddIcon from '@material-ui/icons/PlaylistAdd'
-import CloseIcon from '@material-ui/icons/Close'
+import ArrowBackIcon from '@material-ui/icons/ArrowBack'
 import { playTracks, addTracks, openAddToPlaylist } from '../actions'
 import { getLeaderboards, getLeaderboardDetail, ensureShadowTrack } from './api'
 import { QualityBadge, SourceBadge } from './QualityBadge'
 
 const useStyles = makeStyles((theme) => ({
   root: {
-    padding: theme.spacing(3),
-    maxWidth: 1400,
-    margin: '0 auto',
+    padding: theme.spacing(2, 3),
+    width: '100%',
+    maxWidth: '100%',
+    margin: 0,
+    boxSizing: 'border-box',
+    paddingBottom: 110,
   },
   card: {
     height: '100%',
     display: 'flex',
     flexDirection: 'column',
-    transition: 'transform 0.2s',
+    transition: 'transform 0.2s, box-shadow 0.2s',
+    borderRadius: 8,
     '&:hover': {
       transform: 'translateY(-4px)',
+      boxShadow: '0 8px 24px rgba(0, 0, 0, 0.2)',
     },
     background: 'linear-gradient(145deg, rgba(30, 41, 59, 0.7), rgba(15, 23, 42, 0.8))',
     border: `1px solid ${theme.palette.divider}`,
@@ -68,29 +70,44 @@ const useStyles = makeStyles((theme) => ({
     alignItems: 'center',
     padding: theme.spacing(8),
   },
-  dialogHeader: {
+  // Full-page detail view styles
+  detailPage: {
+    width: '100%',
+  },
+  backBtn: {
+    marginBottom: theme.spacing(2),
+    fontWeight: 600,
+  },
+  detailHero: {
     display: 'flex',
     alignItems: 'center',
-    gap: theme.spacing(2.5),
-    padding: theme.spacing(2),
-    borderBottom: `1px solid ${theme.palette.divider}`,
+    gap: theme.spacing(3),
+    padding: theme.spacing(3),
+    borderRadius: 12,
+    marginBottom: theme.spacing(3),
+    backgroundColor: theme.palette.background.paper,
+    border: `1px solid ${theme.palette.divider}`,
+    [theme.breakpoints.down('xs')]: {
+      flexDirection: 'column',
+      textAlign: 'center',
+    },
   },
-  dialogCover: {
-    width: 100,
-    height: 100,
-    borderRadius: 8,
-    objectFit: 'cover',
-  },
-  dialogInfo: {
+  detailHeroInfo: {
     flex: 1,
   },
-  dialogActionsBar: {
+  heroActionsBar: {
     display: 'flex',
     gap: theme.spacing(1.5),
-    marginTop: theme.spacing(1.5),
+    marginTop: theme.spacing(2),
+    [theme.breakpoints.down('xs')]: {
+      justifyContent: 'center',
+    },
   },
   trackItem: {
+    padding: '12px 16px',
+    borderRadius: 6,
     borderBottom: `1px solid ${theme.palette.divider}`,
+    transition: 'background-color 0.15s ease',
     '&:hover': {
       backgroundColor: theme.palette.action.hover,
     },
@@ -109,8 +126,8 @@ export const OnlineLeaderboards = () => {
   const [boards, setBoards] = useState([])
   const [loading, setLoading] = useState(false)
 
-  // Detail dialog
-  const [selectedBoard, setSelectedBoard] = useState(null)
+  // Full-page detail view state
+  const [currentBoard, setCurrentBoard] = useState(null)
   const [detailData, setDetailData] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [actingId, setActingId] = useState(null)
@@ -133,8 +150,8 @@ export const OnlineLeaderboards = () => {
     }
   }, [source])
 
-  const handleOpenDetail = async (board) => {
-    setSelectedBoard(board)
+  const handleOpenBoard = async (board) => {
+    setCurrentBoard(board)
     setDetailLoading(true)
     try {
       const res = await getLeaderboardDetail(source, board.id)
@@ -148,8 +165,8 @@ export const OnlineLeaderboards = () => {
     }
   }
 
-  const handleCloseDetail = () => {
-    setSelectedBoard(null)
+  const handleBackToList = () => {
+    setCurrentBoard(null)
     setDetailData(null)
   }
 
@@ -210,87 +227,40 @@ export const OnlineLeaderboards = () => {
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`
   }
 
-  return (
-    <div className={classes.root}>
-      <Box display="flex" alignItems="center" mb={2}>
-        <EmojiEventsIcon style={{ marginRight: 8, color: '#F59E0B' }} />
-        <Typography variant="h6">热门音乐排行榜</Typography>
-      </Box>
+  // If a leaderboard is selected, render Page-Level Detail View (下一级菜单，可返回)
+  if (currentBoard) {
+    return (
+      <div className={classes.root}>
+        <div className={classes.detailPage}>
+          <Button
+            startIcon={<ArrowBackIcon />}
+            variant="outlined"
+            size="small"
+            onClick={handleBackToList}
+            className={classes.backBtn}
+          >
+            返回热门排行榜列表
+          </Button>
 
-      <Tabs
-        value={source}
-        onChange={(e, v) => setSource(v)}
-        indicatorColor="primary"
-        textColor="primary"
-        className={classes.sourceTabs}
-      >
-        {SOURCES.map((s) => (
-          <Tab key={s.id} value={s.id} label={s.label} />
-        ))}
-      </Tabs>
-
-      {loading ? (
-        <div className={classes.loadingContainer}>
-          <CircularProgress size={40} />
-        </div>
-      ) : (
-        <Grid container spacing={3}>
-          {boards.map((board) => (
-            <Grid item xs={12} sm={6} md={3} key={board.id}>
-              <Card className={classes.card}>
-                <CardActionArea onClick={() => handleOpenDetail(board)}>
-                  <div className={classes.boardHeader}>
-                    <EmojiEventsIcon style={{ color: '#F59E0B', fontSize: '2rem' }} />
-                    <Typography className={classes.boardTitle}>
-                      {board.name}
-                    </Typography>
-                  </div>
-                  <CardContent style={{ paddingTop: 0 }}>
-                    <Typography variant="body2" color="textSecondary">
-                      实时热度与权威流行榜单
-                    </Typography>
-                  </CardContent>
-                </CardActionArea>
-              </Card>
-            </Grid>
-          ))}
-        </Grid>
-      )}
-
-      {/* Leaderboard Detail Dialog */}
-      <Dialog
-        open={Boolean(selectedBoard)}
-        onClose={handleCloseDetail}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle disableTypography style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Typography variant="h6">排行榜详情</Typography>
-          <IconButton size="small" onClick={handleCloseDetail}>
-            <CloseIcon />
-          </IconButton>
-        </DialogTitle>
-        <DialogContent dividers style={{ padding: 0 }}>
           {detailLoading ? (
             <div className={classes.loadingContainer}>
-              <CircularProgress size={36} />
+              <CircularProgress size={40} />
             </div>
           ) : detailData ? (
             <div>
-              <div className={classes.dialogHeader}>
-                <EmojiEventsIcon style={{ color: '#F59E0B', fontSize: '3rem' }} />
-                <div className={classes.dialogInfo}>
-                  <Typography variant="h6" style={{ fontWeight: 700 }}>
-                    {detailData.name || selectedBoard?.name}
+              <Paper className={classes.detailHero} elevation={0}>
+                <EmojiEventsIcon style={{ color: '#F59E0B', fontSize: '5rem', flexShrink: 0 }} />
+                <div className={classes.detailHeroInfo}>
+                  <Typography variant="h5" style={{ fontWeight: 700, marginBottom: 8 }}>
+                    {detailData.name || currentBoard.name}
                   </Typography>
-                  <Typography variant="body2" color="textSecondary" style={{ marginTop: 4 }}>
-                    共 {detailData.list ? detailData.list.length : 0} 首榜单曲目
+                  <Typography variant="body2" color="textSecondary">
+                    权威热度流行排行榜 &nbsp;•&nbsp; 共 {detailData.list ? detailData.list.length : 0} 首曲目
                   </Typography>
-                  <div className={classes.dialogActionsBar}>
+                  <div className={classes.heroActionsBar}>
                     <Button
                       variant="contained"
                       color="primary"
-                      size="small"
                       startIcon={<PlayArrowIcon />}
                       onClick={handlePlayAll}
                       disabled={!detailData.list || detailData.list.length === 0}
@@ -299,7 +269,7 @@ export const OnlineLeaderboards = () => {
                     </Button>
                   </div>
                 </div>
-              </div>
+              </Paper>
 
               <List disablePadding>
                 {detailData.list && detailData.list.length > 0 ? (
@@ -313,7 +283,7 @@ export const OnlineLeaderboards = () => {
                       <Typography
                         variant="body2"
                         color="textSecondary"
-                        style={{ width: 36, textAlign: 'center', marginRight: 12 }}
+                        style={{ width: 40, textAlign: 'center', marginRight: 12 }}
                       >
                         {idx + 1}
                       </Typography>
@@ -337,7 +307,7 @@ export const OnlineLeaderboards = () => {
                         <Typography
                           variant="caption"
                           color="textSecondary"
-                          style={{ marginRight: 12 }}
+                          style={{ marginRight: 16 }}
                         >
                           {formatDuration(track.duration)}
                         </Typography>
@@ -367,13 +337,58 @@ export const OnlineLeaderboards = () => {
               <Typography color="textSecondary">获取排行榜详情失败</Typography>
             </Box>
           )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseDetail} color="primary">
-            关闭
-          </Button>
-        </DialogActions>
-      </Dialog>
+        </div>
+      </div>
+    )
+  }
+
+  // Leaderboard Grid view
+  return (
+    <div className={classes.root}>
+      <Box display="flex" alignItems="center" mb={2}>
+        <EmojiEventsIcon style={{ marginRight: 8, color: '#F59E0B' }} />
+        <Typography variant="h6">热门音乐排行榜</Typography>
+      </Box>
+
+      <Tabs
+        value={source}
+        onChange={(e, v) => setSource(v)}
+        indicatorColor="primary"
+        textColor="primary"
+        className={classes.sourceTabs}
+      >
+        {SOURCES.map((s) => (
+          <Tab key={s.id} value={s.id} label={s.label} />
+        ))}
+      </Tabs>
+
+      {loading ? (
+        <div className={classes.loadingContainer}>
+          <CircularProgress size={40} />
+        </div>
+      ) : (
+        <Grid container spacing={3}>
+          {boards.map((board) => (
+            <Grid item xs={12} sm={6} md={4} lg={3} xl={2} key={board.id}>
+              <Card className={classes.card}>
+                <CardActionArea onClick={() => handleOpenBoard(board)}>
+                  <div className={classes.boardHeader}>
+                    <EmojiEventsIcon style={{ color: '#F59E0B', fontSize: '2rem' }} />
+                    <Typography className={classes.boardTitle}>
+                      {board.name}
+                    </Typography>
+                  </div>
+                  <CardContent style={{ paddingTop: 0 }}>
+                    <Typography variant="body2" color="textSecondary">
+                      实时热度与权威流行榜单
+                    </Typography>
+                  </CardContent>
+                </CardActionArea>
+              </Card>
+            </Grid>
+          ))}
+        </Grid>
+      )}
     </div>
   )
 }

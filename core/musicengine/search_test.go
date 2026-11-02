@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/dop251/goja"
 )
 
 func TestGetSearchTips(t *testing.T) {
@@ -54,4 +56,51 @@ func TestGetSonglistDetailNative(t *testing.T) {
 		t.Fatalf("GetSonglistDetailNative returned 0 tracks for playlist 3778678")
 	}
 	t.Logf("Success: NetEase playlist detail fetched %d tracks (Title: %s)", len(detail.List), detail.Title)
+}
+
+func TestGojaPromiseExport(t *testing.T) {
+	vm := goja.New()
+	val, err := vm.RunString(`
+		new Promise(function(resolve) {
+			resolve("https://example.com/song.mp3");
+		});
+	`)
+	if err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	t.Logf("val type: %T, val.Export() type: %T", val, val.Export())
+	if p, ok := val.Export().(*goja.Promise); ok {
+		t.Logf("Successfully exported as *goja.Promise! State: %v, Result: %v", p.State(), p.Result())
+	} else {
+		t.Logf("Could not export as *goja.Promise directly. val: %#v", val)
+	}
+
+	valAsync, err := vm.RunString(`
+		(async function() {
+			return "https://example.com/async.mp3";
+		})()
+	`)
+	if err != nil {
+		t.Fatalf("RunString async failed: %v", err)
+	}
+	pAsync := valAsync.Export().(*goja.Promise)
+	t.Logf("async function: State: %v, Result: %v", pAsync.State(), pAsync.Result())
+}
+
+func TestResolveStreamURLNative(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	engine := &MusicEngine{
+		streamCache: make(map[string]*cachedStreamItem),
+	}
+
+	stream, err := engine.ResolveStreamURL(ctx, "kw", "284144", Quality128k)
+	if err != nil {
+		t.Fatalf("ResolveStreamURL failed: %v", err)
+	}
+	if stream == nil || stream.URL == "" {
+		t.Fatalf("ResolveStreamURL returned empty stream")
+	}
+	t.Logf("Successfully resolved native stream URL: %s", stream.URL)
 }

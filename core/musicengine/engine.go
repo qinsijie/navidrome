@@ -70,11 +70,10 @@ func GetEngine(ds model.DataStore) *MusicEngine {
 // ResolveStreamURL resolves the live CDN stream URL using singleflight and 20-min LRU cache
 func (e *MusicEngine) ResolveStreamURL(ctx context.Context, source, songID, quality string) (*ResolvedStream, error) {
 	state := e.state.Load()
-	if state == nil || state.pool == nil {
-		return nil, errors.New("music engine has no active source script configured")
+	cacheKey := fmt.Sprintf("%s:%s:%s", source, songID, quality)
+	if state != nil {
+		cacheKey = fmt.Sprintf("%s:%s:%s:%s", state.version, source, songID, quality)
 	}
-
-	cacheKey := fmt.Sprintf("%s:%s:%s:%s", state.version, source, songID, quality)
 
 	// 1. Fast cache check
 	e.cacheMu.RLock()
@@ -94,7 +93,7 @@ func (e *MusicEngine) ResolveStreamURL(ctx context.Context, source, songID, qual
 		}
 		e.cacheMu.RUnlock()
 
-		// Attempt resolution with automatic quality fallback
+		// Attempt resolution with automatic quality fallback and native fallback
 		stream, resolveErr := e.doResolveWithFallback(ctx, state, source, songID, quality)
 		if resolveErr != nil {
 			return nil, resolveErr
@@ -128,13 +127,23 @@ func (e *MusicEngine) doResolveWithFallback(ctx context.Context, state *EngineSt
 	}
 
 	var lastErr error
+	if state != nil && state.pool != nil {
+		for _, q := range qualities {
+			stream, err := e.callScriptGetMusicUrl(ctx, state, source, songID, q)
+			if err == nil && stream != nil && stream.URL != "" {
+				return stream, nil
+			}
+			if err != nil {
+				lastErr = err
+			}
+		}
+	}
+
+	// Direct native stream fallback for kuwo & netease
 	for _, q := range qualities {
-		stream, err := e.callScriptGetMusicUrl(ctx, state, source, songID, q)
+		stream, err := resolveNativeStream(ctx, source, songID, q)
 		if err == nil && stream != nil && stream.URL != "" {
 			return stream, nil
-		}
-		if err != nil {
-			lastErr = err
 		}
 	}
 
@@ -144,13 +153,87 @@ func (e *MusicEngine) doResolveWithFallback(ctx context.Context, state *EngineSt
 	return nil, fmt.Errorf("no playable stream link found for %s:%s", source, songID)
 }
 
+func resolveNativeStream(ctx context.Context, source, songID, quality string) (*ResolvedStream, error) {
+	switch strings.ToLower(source) {
+	case "kw":
+		rid := strings.TrimPrefix(songID, "MUSIC_")
+		client := &http.Client{Timeout: 6 * time.Second}
+		reqURL := fmt.Sprintf("http://antiserver.kuwo.cn/anti.s?type=convert_url&rid=%s&format=mp3&response=url", rid)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		targetURL := strings.TrimSpace(string(body))
+		if strings.HasPrefix(targetURL, "http://") || strings.HasPrefix(targetURL, "https://") {
+			return &ResolvedStream{
+				URL: targetURL,
+				Headers: map[string]string{
+					"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+				},
+			}, nil
+		}
+		return nil, fmt.Errorf("invalid kuwo stream response: %s", targetURL)
+
+	case "wy":
+		client := &http.Client{
+			Timeout: 6 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		outerURL := fmt.Sprintf("http://music.163.com/song/media/outer/url?id=%s.mp3", songID)
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, outerURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		loc := resp.Header.Get("Location")
+		if loc != "" && !strings.Contains(loc, "404") {
+			return &ResolvedStream{
+				URL: loc,
+				Headers: map[string]string{
+					"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+				},
+			}, nil
+		}
+		return nil, fmt.Errorf("netease song %s is restricted or unavailable", songID)
+	}
+
+	return nil, fmt.Errorf("no native resolver for source %s", source)
+}
+
 func (e *MusicEngine) callScriptGetMusicUrl(ctx context.Context, state *EngineState, source, songID, quality string) (*ResolvedStream, error) {
 	val, err := state.pool.ExecuteWithTimeout(ctx, 10*time.Second, func(vm *goja.Runtime) (any, error) {
-		// Look up apis[source].getMusicUrl or lx.getMusicUrl
+		// Look up apis[source].getMusicUrl or lx.getMusicUrl or _lx_events.request
 		script := fmt.Sprintf(`
 			(function() {
+				var finalResult = null;
+				function unwrap(p) {
+					if (!p) return null;
+					if (typeof p.then === 'function') {
+						p.then(function(v) { finalResult = v; }).catch(function() { finalResult = null; });
+						return finalResult || p;
+					}
+					return p;
+				}
+
 				if (typeof globalThis._lx_events !== 'undefined' && typeof globalThis._lx_events.request === 'function') {
-					return globalThis._lx_events.request({
+					var p = globalThis._lx_events.request({
 						action: 'musicUrl',
 						source: '%s',
 						info: {
@@ -162,12 +245,13 @@ func (e *MusicEngine) callScriptGetMusicUrl(ctx context.Context, state *EngineSt
 							}
 						}
 					});
+					return unwrap(p);
 				}
 				if (typeof global.lxMusicSdk !== 'undefined' && global.lxMusicSdk['%s']) {
-					return global.lxMusicSdk['%s'].getMusicUrl({ id: '%s' }, '%s');
+					return unwrap(global.lxMusicSdk['%s'].getMusicUrl({ id: '%s' }, '%s'));
 				}
 				if (typeof global.userApi !== 'undefined' && global.userApi.getMusicUrl) {
-					return global.userApi.getMusicUrl('%s', { id: '%s' }, '%s');
+					return unwrap(global.userApi.getMusicUrl('%s', { id: '%s' }, '%s'));
 				}
 				return null;
 			})()
@@ -188,10 +272,16 @@ func (e *MusicEngine) callScriptGetMusicUrl(ctx context.Context, state *EngineSt
 				res = p.Result()
 			case goja.PromiseStateRejected:
 				return nil, fmt.Errorf("promise rejected: %v", p.Result())
+			case goja.PromiseStatePending:
+				return nil, errors.New("script promise returned pending")
 			}
 		}
 
-		return extractResolvedStream(res), nil
+		resolved := extractResolvedStream(res)
+		if resolved == nil || resolved.URL == "" {
+			return nil, errors.New("empty stream URL returned from script")
+		}
+		return resolved, nil
 	})
 
 	if err != nil {
@@ -210,21 +300,28 @@ func extractResolvedStream(val goja.Value) *ResolvedStream {
 	}
 
 	if str, ok := val.Export().(string); ok {
-		res.URL = str
+		res.URL = strings.TrimSpace(str)
 		return res
 	}
 
 	if obj, ok := val.Export().(map[string]any); ok {
 		if u, ok := obj["url"].(string); ok {
-			res.URL = u
+			res.URL = strings.TrimSpace(u)
 		}
 		if h, ok := obj["headers"].(map[string]any); ok {
+			for k, v := range h {
+				res.Headers[k] = fmt.Sprint(v)
+			}
+		} else if h, ok := obj["header"].(map[string]any); ok {
 			for k, v := range h {
 				res.Headers[k] = fmt.Sprint(v)
 			}
 		}
 	}
 
+	if res.URL == "" {
+		return nil
+	}
 	return res
 }
 
