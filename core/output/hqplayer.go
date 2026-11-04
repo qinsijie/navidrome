@@ -159,22 +159,26 @@ func (c *HQPlayerClient) PlayRawStream(ctx context.Context, cfg HQPlayerConfig, 
 		log.Warn(ctx, "HQPlayer Stop warning", "resp", stopResp, err)
 	}
 
-	// 2. Clear previous playlist entries
+	// 2. Hardware grace delay: 500ms sleep ensures previous streaming session stops,
+	// and ALSA / Diretta driver cleanly drains DMA buffer and releases soundcard handle.
+	time.Sleep(500 * time.Millisecond)
+
+	// 3. Clear previous playlist entries
 	clearResp, err := sendCmd("<PlaylistClear/>")
 	if err != nil || !strings.Contains(clearResp, `result="OK"`) {
 		log.Warn(ctx, "HQPlayer PlaylistClear warning", "resp", clearResp, err)
 	}
 
-	// 3. Queue new track with XML-safe URI
+	// 4. Queue new track with XML-safe URI
 	addResp, err := sendCmd(fmt.Sprintf(`<PlaylistAdd uri="%s"/>`, escapedURI))
 	if err != nil || !strings.Contains(addResp, `result="OK"`) {
 		return fmt.Errorf("hqplayer PlaylistAdd failed (%s): %w", addResp, err)
 	}
 
-	// 4. Transport mount delay: allow HQPE's HTTP reader to finish probing audio format headers (HEAD/Range)
+	// 5. Transport mount delay: allow HQPE's HTTP reader to finish probing audio format headers (HEAD/Range)
 	time.Sleep(150 * time.Millisecond)
 
-	// 5. Trigger <Play/> with retry logic for transient "Empty transport"
+	// 6. Trigger <Play/> with retry logic for transient "Empty transport"
 	var playResp string
 	for attempt := 0; attempt < 3; attempt++ {
 		playResp, err = sendCmd("<Play/>")
@@ -188,7 +192,7 @@ func (c *HQPlayerClient) PlayRawStream(ctx context.Context, cfg HQPlayerConfig, 
 		return fmt.Errorf("hqplayer Play failed (%s): %w", playResp, err)
 	}
 
-	// 6. Apply Seek ONLY if timeOffset >= 1.0 (filter micro-offsets < 1.0s to avoid audio glitch / buffer flush)
+	// 7. Apply Seek ONLY if timeOffset >= 1.0 (filter micro-offsets < 1.0s to avoid audio glitch / buffer flush)
 	if timeOffset >= 1.0 {
 		seekResp, err := sendCmd(fmt.Sprintf(`<Seek position="%d"/>`, int(timeOffset)))
 		if err != nil || !strings.Contains(seekResp, `result="OK"`) {
@@ -200,16 +204,24 @@ func (c *HQPlayerClient) PlayRawStream(ctx context.Context, cfg HQPlayerConfig, 
 	return nil
 }
 
+// GracefulRelease stops playback, waits 500ms for ALSA/Diretta DMA buffer release, then clears the playlist.
+func (c *HQPlayerClient) GracefulRelease(ctx context.Context, cfg HQPlayerConfig) error {
+	log.Info(fmt.Sprintf("HQPlayer: Executing graceful release sequence on %s (Stop -> 500ms delay -> PlaylistClear)", cfg.Host))
+	_, _ = c.SendHQPlayerXMLCommands(ctx, cfg, "<Stop/>")
+	time.Sleep(500 * time.Millisecond)
+	_, _ = c.SendHQPlayerXMLCommands(ctx, cfg, "<PlaylistClear/>")
+	return nil
+}
+
 // Control sends playback control action to HQPlayer via XML-over-TCP protocol
-// Note: "pause" is intentionally mapped to "<Stop/>" to cleanly release HQPlayer DSP pipelines and DAC clock locks.
+// Note: "pause" is intentionally mapped to GracefulRelease to cleanly release HQPlayer DSP pipelines and DAC clock locks.
 func (c *HQPlayerClient) Control(ctx context.Context, cfg HQPlayerConfig, action string, timeOffset float64, volume int) error {
 	switch action {
 	case "play":
 		_, err := c.SendHQPlayerXMLCommands(ctx, cfg, "<Play/>")
 		return err
 	case "pause", "stop":
-		_, err := c.SendHQPlayerXMLCommands(ctx, cfg, "<Stop/>", "<PlaylistClear/>")
-		return err
+		return c.GracefulRelease(ctx, cfg)
 	case "seek":
 		if timeOffset < 1.0 {
 			timeOffset = 0

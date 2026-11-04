@@ -22,6 +22,7 @@ import {
 } from 'react-icons/md'
 import { useNotify } from 'react-admin'
 import { httpClient } from '../dataProvider'
+import HQPlayerTakeoverDialog from './HQPlayerTakeoverDialog'
 
 const useStyles = makeStyles((theme) => ({
   zoneBadge: {
@@ -127,6 +128,9 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
   const [devices, setDevices] = useState([])
   const [activeId, setActiveId] = useState('local')
   const [nowPlaying, setNowPlaying] = useState(null)
+  const [takeoverDialogOpen, setTakeoverDialogOpen] = useState(false)
+  const [occupiedBy, setOccupiedBy] = useState(null)
+  const [pendingDev, setPendingDev] = useState(null)
 
   const loadDevices = useCallback(() => {
     httpClient('/api/output/devices?enabled_only=true')
@@ -154,6 +158,33 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
     setAnchorEl(null)
   }
 
+  const doSelectDevice = (dev, forceTakeover = false) => {
+    httpClient('/api/output/device', {
+      method: 'POST',
+      body: JSON.stringify({ deviceId: dev.id, forceTakeover }),
+    })
+      .then(() => {
+        setActiveId(dev.id)
+        window.dispatchEvent(
+          new CustomEvent('nd:output-device-changed', { detail: { deviceId: dev.id, device: dev } }),
+        )
+        notify(`已选择输出设备: ${dev.name} (点击播放按钮时推流)`, 'info')
+        setTakeoverDialogOpen(false)
+        handleClose()
+      })
+      .catch((err) => {
+        if (err.status === 409 || err.body?.code === 'HQPLAYER_OCCUPIED') {
+          const occ = err.body?.occupiedBy || { userName: '其他用户', trackTitle: '外部音频流' }
+          setOccupiedBy(occ)
+          setPendingDev(dev)
+          setTakeoverDialogOpen(true)
+          handleClose()
+          return
+        }
+        notify(`切换输出设备失败: ${err.message}`, 'error')
+      })
+  }
+
   const handleSelectDevice = (dev) => {
     if (dev.id === 'local') {
       // Local browser / device playback is private to current device
@@ -175,21 +206,7 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
       return
     }
 
-    httpClient('/api/output/device', {
-      method: 'POST',
-      body: JSON.stringify({ deviceId: dev.id }),
-    })
-      .then(() => {
-        setActiveId(dev.id)
-        window.dispatchEvent(
-          new CustomEvent('nd:output-device-changed', { detail: { deviceId: dev.id, device: dev } }),
-        )
-        notify(`已选择输出设备: ${dev.name} (点击播放按钮时推流)`, 'info')
-        handleClose()
-      })
-      .catch((err) => {
-        notify(`切换输出设备失败: ${err.message}`, 'error')
-      })
+    doSelectDevice(dev, false)
   }
 
   const activeDevice = devices.find((d) => d.id === activeId) || {
@@ -280,6 +297,17 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
           <MdArrowForward size={16} />
         </MenuItem>
       </Menu>
+
+      <HQPlayerTakeoverDialog
+        open={takeoverDialogOpen}
+        onClose={() => setTakeoverDialogOpen(false)}
+        onConfirm={() => {
+          if (pendingDev) {
+            doSelectDevice(pendingDev, true)
+          }
+        }}
+        occupiedBy={occupiedBy}
+      />
     </>
   )
 }

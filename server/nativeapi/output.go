@@ -14,10 +14,13 @@ import (
 	"github.com/navidrome/navidrome/core/output"
 	"github.com/navidrome/navidrome/core/stream"
 	"github.com/navidrome/navidrome/log"
+	"github.com/navidrome/navidrome/model/request"
+	"github.com/navidrome/navidrome/server/events"
 )
 
 type selectDeviceRequest struct {
-	DeviceID string `json:"deviceId"`
+	DeviceID      string `json:"deviceId"`
+	ForceTakeover bool   `json:"forceTakeover,omitempty"`
 }
 
 type updateDeviceRequest struct {
@@ -37,29 +40,32 @@ type addDLNARequest struct {
 }
 
 type playbackControlRequest struct {
-	Action     string  `json:"action"` // play, pause, stop, next, prev, jump, seek, volume, playMode
-	Index      int     `json:"index,omitempty"`
-	TimeOffset float64 `json:"timeOffset,omitempty"`
-	Volume     int     `json:"volume,omitempty"` // 0-100
-	Mode       string  `json:"mode,omitempty"`
+	Action        string  `json:"action"` // play, pause, stop, next, prev, jump, seek, volume, playMode
+	Index         int     `json:"index,omitempty"`
+	TimeOffset    float64 `json:"timeOffset,omitempty"`
+	Volume        int     `json:"volume,omitempty"` // 0-100
+	Mode          string  `json:"mode,omitempty"`
+	ForceTakeover bool    `json:"forceTakeover,omitempty"`
 }
 
 type playStreamRequest struct {
-	TrackID    string  `json:"trackId"`
-	Title      string  `json:"title"`
-	Artist     string  `json:"artist"`
-	Album      string  `json:"album"`
-	StreamURL  string  `json:"streamUrl"`
-	Duration   float64 `json:"duration,omitempty"`
-	TimeOffset float64 `json:"timeOffset,omitempty"`
+	TrackID       string  `json:"trackId"`
+	Title         string  `json:"title"`
+	Artist        string  `json:"artist"`
+	Album         string  `json:"album"`
+	StreamURL     string  `json:"streamUrl"`
+	Duration      float64 `json:"duration,omitempty"`
+	TimeOffset    float64 `json:"timeOffset,omitempty"`
+	ForceTakeover bool    `json:"forceTakeover,omitempty"`
 }
 
 type setQueueRequest struct {
-	Tracks     []output.TrackMetadata `json:"tracks"`
-	StartIndex int                    `json:"startIndex"`
-	TimeOffset float64                `json:"timeOffset,omitempty"`
-	PlayMode   string                 `json:"playMode,omitempty"`
-	AutoPlay   bool                   `json:"autoPlay,omitempty"`
+	Tracks        []output.TrackMetadata `json:"tracks"`
+	StartIndex    int                    `json:"startIndex"`
+	TimeOffset    float64                `json:"timeOffset,omitempty"`
+	PlayMode      string                 `json:"playMode,omitempty"`
+	AutoPlay      bool                   `json:"autoPlay,omitempty"`
+	ForceTakeover bool                   `json:"forceTakeover,omitempty"`
 }
 
 func resolveOutboundURL(r *http.Request, rawURL string, targetHost string) string {
@@ -184,6 +190,32 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 func (api *Router) addOutputRoutes(r chi.Router) {
 	mgr := output.GetManager()
 
+	// Wire UserSession real-time state broadcast to SSE Broker
+	output.GetUserSessionManager().SetBroadcaster(func(ctx context.Context, username string, state output.UserSessionState) {
+		senderCtx := request.WithUsername(ctx, username)
+		if state.SourceClient != "" {
+			senderCtx = request.WithClientUniqueId(senderCtx, state.SourceClient)
+		}
+		evt := &events.UserPlaybackState{
+			UserID:       state.UserID,
+			UserName:     state.UserName,
+			TrackID:      state.Track.TrackID,
+			Title:        state.Track.Title,
+			Artist:       state.Track.Artist,
+			Album:        state.Track.Album,
+			Duration:     state.Track.Duration,
+			State:        state.State,
+			TimeOffset:   state.TimeOffset,
+			StartedAt:    state.StartedAt,
+			Epoch:        state.Epoch,
+			OutputTarget: state.OutputTarget,
+			PlayMode:     state.PlayMode,
+			CurrentIndex: state.CurrentIndex,
+			SourceClient: state.SourceClient,
+		}
+		events.GetBroker().SendMessage(senderCtx, evt)
+	})
+
 	r.Get("/output/devices", func(w http.ResponseWriter, r *http.Request) {
 		onlyEnabled := r.URL.Query().Get("enabled_only") == "true"
 		devices := mgr.GetDevices(r.Context(), onlyEnabled)
@@ -192,6 +224,7 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			"devices":    devices,
 			"activeId":   string(output.DeviceTypeLocal),
 			"hqConfig":   mgr.GetHQPlayerConfig(),
+			"hqLease":    mgr.GetHQPlayerLease(),
 			"nowPlaying": mgr.GetNowPlaying(),
 		})
 	})
@@ -208,10 +241,33 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+
+		user, _ := request.UserFrom(r.Context())
+		if req.DeviceID == "hqplayer" {
+			canAccess, owner := mgr.CheckHQPlayerAccess(user.ID, user.UserName, req.ForceTakeover)
+			if !canAccess {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status":     "conflict",
+					"code":       "HQPLAYER_OCCUPIED",
+					"occupiedBy": owner,
+				})
+				return
+			}
+		} else if req.DeviceID == string(output.DeviceTypeLocal) {
+			mgr.ReleaseHQPlayerLease(user.ID)
+		}
+
 		if err := mgr.SetActiveDevice(req.DeviceID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
+		clientUID, _ := request.ClientUniqueIdFrom(r.Context())
+		sess.UpdatePlayback(r.Context(), sess.Snapshot().State, sess.Snapshot().Track, sess.Snapshot().CurrentIndex, sess.Snapshot().TimeOffset, sess.Snapshot().PlayMode, req.DeviceID, clientUID)
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "activeId": req.DeviceID})
@@ -334,11 +390,41 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			}
 		}
 
+		user, _ := request.UserFrom(r.Context())
+		if req.AutoPlay && mgr.GetActiveDevice() == "hqplayer" {
+			canAccess, owner := mgr.CheckHQPlayerAccess(user.ID, user.UserName, req.ForceTakeover)
+			if !canAccess {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status":     "conflict",
+					"code":       "HQPLAYER_OCCUPIED",
+					"occupiedBy": owner,
+				})
+				return
+			}
+			if len(req.Tracks) > req.StartIndex && req.StartIndex >= 0 {
+				mgr.AcquireHQPlayerLease(user.ID, user.UserName, req.Tracks[req.StartIndex])
+			}
+		}
+
 		if err := mgr.GetSession().SetQueue(req.Tracks, req.StartIndex, req.TimeOffset, req.PlayMode, req.AutoPlay); err != nil {
 			log.Error(r.Context(), "Failed to set output queue", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
+		clientUID, _ := request.ClientUniqueIdFrom(r.Context())
+		track := output.TrackMetadata{}
+		if len(req.Tracks) > req.StartIndex && req.StartIndex >= 0 {
+			track = req.Tracks[req.StartIndex]
+		}
+		playbackState := "stopped"
+		if req.AutoPlay {
+			playbackState = "playing"
+		}
+		sess.UpdatePlayback(r.Context(), playbackState, track, req.StartIndex, req.TimeOffset, req.PlayMode, mgr.GetActiveDevice(), clientUID)
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -352,6 +438,21 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
+		}
+
+		user, _ := request.UserFrom(r.Context())
+		if mgr.GetActiveDevice() == "hqplayer" {
+			canAccess, owner := mgr.CheckHQPlayerAccess(user.ID, user.UserName, req.ForceTakeover)
+			if !canAccess {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"status":     "conflict",
+					"code":       "HQPLAYER_OCCUPIED",
+					"occupiedBy": owner,
+				})
+				return
+			}
 		}
 
 		if req.TimeOffset < 1.0 {
@@ -389,11 +490,19 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			Stream:   resolvedURL,
 			Duration: duration,
 		}
+		if mgr.GetActiveDevice() == "hqplayer" {
+			mgr.AcquireHQPlayerLease(user.ID, user.UserName, meta)
+		}
 		if err := mgr.PlayStream(r.Context(), resolvedURL, meta, req.TimeOffset); err != nil {
 			log.Error(r.Context(), "Failed to play stream on output device", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
+		clientUID, _ := request.ClientUniqueIdFrom(r.Context())
+		sess.UpdatePlayback(r.Context(), "playing", meta, -1, req.TimeOffset, "", mgr.GetActiveDevice(), clientUID)
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "nowPlaying": mgr.GetNowPlaying()})
@@ -405,6 +514,12 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+
+		user, _ := request.UserFrom(r.Context())
+		if req.Action == "pause" || req.Action == "stop" {
+			mgr.ReleaseHQPlayerLease(user.ID)
+		}
+
 		if req.Action == "seek" && req.TimeOffset < 1.0 {
 			req.TimeOffset = 0
 		}
@@ -413,6 +528,11 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
+		clientUID, _ := request.ClientUniqueIdFrom(r.Context())
+		sess.UpdatePlayback(r.Context(), req.Action, sess.Snapshot().Track, req.Index, req.TimeOffset, req.Mode, "", clientUID)
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "nowPlaying": mgr.GetNowPlaying()})

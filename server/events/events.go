@@ -68,6 +68,25 @@ type NowPlayingCount struct {
 	Count int `json:"count"`
 }
 
+type UserPlaybackState struct {
+	baseEvent
+	UserID       string  `json:"userId"`
+	UserName     string  `json:"userName"`
+	TrackID      string  `json:"trackId"`
+	Title        string  `json:"title"`
+	Artist       string  `json:"artist"`
+	Album        string  `json:"album"`
+	Duration     float64 `json:"duration"`
+	State        string  `json:"state"` // playing, paused, stopped
+	TimeOffset   float64 `json:"timeOffset"`
+	StartedAt    int64   `json:"startedAt"`
+	Epoch        uint64  `json:"epoch"`
+	OutputTarget string  `json:"outputTarget"`
+	PlayMode     string  `json:"playMode"`
+	CurrentIndex int     `json:"currentIndex"`
+	SourceClient string  `json:"sourceClient,omitempty"`
+}
+
 func (rr *RefreshResource) With(resource string, ids ...string) *RefreshResource {
 	if rr.resources == nil {
 		rr.resources = make(map[string][]string)

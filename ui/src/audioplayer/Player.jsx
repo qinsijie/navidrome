@@ -36,6 +36,7 @@ import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
 import { httpClient } from '../dataProvider'
+import HQPlayerTakeoverDialog from './HQPlayerTakeoverDialog'
 
 const Player = () => {
   const theme = useCurrentTheme()
@@ -139,6 +140,66 @@ const Player = () => {
   activeOutputDeviceRef.current = activeOutputDevice
   const activeDeviceNameRef = useRef('HQPlayer')
   const isQueueOpenRef = useRef(false)
+  const [takeoverDialogOpen, setTakeoverDialogOpen] = useState(false)
+  const [occupiedBy, setOccupiedBy] = useState(null)
+  const pendingTakeoverActionRef = useRef(null)
+
+  // Listen to server UserSession SSE events for multi-device synchronized playback
+  useEffect(() => {
+    const handleUserPlaybackState = (e) => {
+      const serverState = e.detail
+      if (!serverState) return
+
+      if (serverState.outputTarget && serverState.outputTarget !== activeOutputDeviceRef.current) {
+        setActiveOutputDevice(serverState.outputTarget)
+      }
+
+      // If output is local, synchronize audio playback across devices of the same user
+      if ((serverState.outputTarget === 'local' || !serverState.outputTarget) && audioInstance) {
+        if (serverState.state === 'playing') {
+          const nowMs = Date.now()
+          let targetSec = serverState.timeOffset || 0
+          if (serverState.startedAt > 0) {
+            targetSec += Math.max(0, (nowMs - serverState.startedAt) / 1000)
+          }
+
+          const queue = playerStateRef.current?.queue || []
+          if (serverState.currentIndex >= 0 && serverState.currentIndex < queue.length) {
+            if (playerStateRef.current?.playIndex !== serverState.currentIndex) {
+              if (typeof audioInstance.playByIndex === 'function') {
+                try {
+                  audioInstance.playByIndex(serverState.currentIndex)
+                } catch (err) {}
+              }
+            }
+          }
+
+          if (
+            Math.abs((audioInstance.currentTime || 0) - targetSec) > 1.5 &&
+            audioInstance.duration &&
+            targetSec < audioInstance.duration
+          ) {
+            try {
+              audioInstance.currentTime = targetSec
+            } catch (err) {}
+          }
+
+          if (audioInstance.paused && !audioInstance.ended) {
+            audioInstance.play().catch(() => {})
+          }
+        } else if (serverState.state === 'paused' || serverState.state === 'stopped') {
+          if (!audioInstance.paused) {
+            audioInstance.pause()
+          }
+        }
+      }
+    }
+
+    window.addEventListener('nd:user-playback-state', handleUserPlaybackState)
+    return () => {
+      window.removeEventListener('nd:user-playback-state', handleUserPlaybackState)
+    }
+  }, [audioInstance])
 
   // Listen to popstate so mobile back gesture closes queue panel without leaving page
   useEffect(() => {
@@ -287,16 +348,26 @@ const Player = () => {
       streamUrl: `/api/output/stream/${item.trackId}`,
     }))
 
-    httpClient('/api/output/queue', {
-      method: 'POST',
-      body: JSON.stringify({
-        tracks: payloadTracks,
-        startIndex: currentIdx,
-        timeOffset: (audioInstance?.currentTime && audioInstance.currentTime >= 1.0) ? audioInstance.currentTime : 0,
-        playMode: playerState.mode,
-        autoPlay: true,
-      }),
-    }).catch(() => {})
+    const sendQueue = (forceTakeover = false) => {
+      httpClient('/api/output/queue', {
+        method: 'POST',
+        body: JSON.stringify({
+          tracks: payloadTracks,
+          startIndex: currentIdx,
+          timeOffset: (audioInstance?.currentTime && audioInstance.currentTime >= 1.0) ? audioInstance.currentTime : 0,
+          playMode: playerState.mode,
+          autoPlay: true,
+          forceTakeover,
+        }),
+      }).catch((err) => {
+        if (err.status === 409 || err.body?.code === 'HQPLAYER_OCCUPIED') {
+          setOccupiedBy(err.body?.occupiedBy || { userName: '其他用户', trackTitle: '外部音频流' })
+          pendingTakeoverActionRef.current = () => sendQueue(true)
+          setTakeoverDialogOpen(true)
+        }
+      })
+    }
+    sendQueue(false)
   }, [activeOutputDevice, playerState.queue, playerState.playIndex, playerState.mode, playerState.clear, audioInstance])
 
   // Sync state from server session every 2 seconds
@@ -688,18 +759,36 @@ const Player = () => {
           remoteProgressRef.current.duration = info.duration || 0
           remoteProgressRef.current.playing = true
           virtualSecRef.current = 0
-          httpClient('/api/output/control', {
-            method: 'POST',
-            body: JSON.stringify({ action: 'jump', index: targetIndex }),
-          }).catch(() => {})
+          const sendJump = (forceTakeover = false) => {
+            httpClient('/api/output/control', {
+              method: 'POST',
+              body: JSON.stringify({ action: 'jump', index: targetIndex, forceTakeover }),
+            }).catch((err) => {
+              if (err.status === 409 || err.body?.code === 'HQPLAYER_OCCUPIED') {
+                setOccupiedBy(err.body?.occupiedBy || { userName: '其他用户', trackTitle: '外部音频流' })
+                pendingTakeoverActionRef.current = () => sendJump(true)
+                setTakeoverDialogOpen(true)
+              }
+            })
+          }
+          sendJump(false)
         } else {
           if (!remoteProgressRef.current.playing) {
             remoteProgressRef.current.playing = true
             remoteProgressRef.current.baseClientTime = Date.now()
-            httpClient('/api/output/control', {
-              method: 'POST',
-              body: JSON.stringify({ action: 'play' }),
-            }).catch(() => {})
+            const sendPlay = (forceTakeover = false) => {
+              httpClient('/api/output/control', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'play', forceTakeover }),
+              }).catch((err) => {
+                if (err.status === 409 || err.body?.code === 'HQPLAYER_OCCUPIED') {
+                  setOccupiedBy(err.body?.occupiedBy || { userName: '其他用户', trackTitle: '外部音频流' })
+                  pendingTakeoverActionRef.current = () => sendPlay(true)
+                  setTakeoverDialogOpen(true)
+                }
+              })
+            }
+            sendPlay(false)
           }
         }
       }
@@ -1184,6 +1273,15 @@ const Player = () => {
         getAudioInstance={setAudioInstance}
       />
       <GlobalHotKeys handlers={handlers} keyMap={keyMap} allowChanges />
+      <HQPlayerTakeoverDialog
+        open={takeoverDialogOpen}
+        onClose={() => setTakeoverDialogOpen(false)}
+        onConfirm={() => {
+          setTakeoverDialogOpen(false)
+          pendingTakeoverActionRef.current?.()
+        }}
+        occupiedBy={occupiedBy}
+      />
     </ThemeProvider>
   )
 

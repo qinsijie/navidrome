@@ -26,6 +26,14 @@ const setupHandlers = (stream, dispatchFn) => {
   stream.addEventListener('serverStart', eventHandler(dispatchFn))
   stream.addEventListener('scanStatus', throttledEventHandler(dispatchFn))
   stream.addEventListener('refreshResource', eventHandler(dispatchFn))
+  stream.addEventListener('userPlaybackState', (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      window.dispatchEvent(
+        new CustomEvent('nd:user-playback-state', { detail: data }),
+      )
+    } catch (e) {}
+  })
   if (config.enableNowPlaying) {
     stream.addEventListener('nowPlayingCount', eventHandler(dispatchFn))
   }
@@ -82,6 +90,14 @@ const startEventStreamLegacy = async (dispatchFn) => {
         throttledEventHandler(dispatchFn),
       )
       newStream.addEventListener('refreshResource', eventHandler(dispatchFn))
+      newStream.addEventListener('userPlaybackState', (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          window.dispatchEvent(
+            new CustomEvent('nd:user-playback-state', { detail: data }),
+          )
+        } catch (e) {}
+      })
       if (config.enableNowPlaying) {
         newStream.addEventListener('nowPlayingCount', eventHandler(dispatchFn))
       }
