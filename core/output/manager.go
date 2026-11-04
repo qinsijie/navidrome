@@ -120,9 +120,8 @@ func (m *Manager) loadState() {
 		m.localName = state.LocalName
 	}
 	m.localEnabled = state.LocalEnabled
-	if state.ActiveDeviceID != "" {
-		m.activeDevID = state.ActiveDeviceID
-	}
+	// Output device MUST always default to local (DeviceTypeLocal) on server startup
+	m.activeDevID = string(DeviceTypeLocal)
 	if state.HQConfig.Host != "" || state.HQConfig.Name != "" {
 		m.hqConfig = state.HQConfig
 		if m.hqConfig.Port <= 0 || m.hqConfig.Port == 32400 {
@@ -265,15 +264,16 @@ func (m *Manager) GetDevices(ctx context.Context, onlyEnabled bool) []Device {
 
 func (m *Manager) SetActiveDevice(deviceID string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Verify target device is enabled
 	if deviceID == string(DeviceTypeLocal) {
 		if !m.localEnabled {
+			m.mu.Unlock()
 			return fmt.Errorf("本机播放已被禁用")
 		}
 	} else if deviceID == "hqplayer" {
 		if !m.hqConfig.Enabled || m.hqConfig.Host == "" {
+			m.mu.Unlock()
 			return fmt.Errorf("HQPlayer 节点未启用或未配置 IP")
 		}
 	} else {
@@ -281,14 +281,34 @@ func (m *Manager) SetActiveDevice(deviceID string) error {
 		dev, ok := m.dlnaScanner.devices[deviceID]
 		m.dlnaScanner.mu.RUnlock()
 		if !ok || !dev.Enabled {
+			m.mu.Unlock()
 			return fmt.Errorf("DLNA 目标设备未找到或已被禁用")
 		}
 	}
 
+	oldDevID := m.activeDevID
 	m.activeDevID = deviceID
 	if m.session != nil {
 		m.session.SetDeviceID(deviceID)
+		if deviceID == string(DeviceTypeLocal) {
+			_ = m.session.Stop()
+		}
 	}
+	hqCfg := m.hqConfig
+	m.mu.Unlock()
+
+	// If switching away from a remote device, release the hardware immediately
+	if oldDevID != "" && oldDevID != string(DeviceTypeLocal) && (deviceID == string(DeviceTypeLocal) || deviceID != oldDevID) {
+		go func(prevDev string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = m.controlDevice(ctx, prevDev, "stop", 0, 0)
+			if prevDev == "hqplayer" {
+				_, _ = m.hqClient.SendHQPlayerXMLCommands(ctx, hqCfg, "<Stop/>", "<PlaylistClear/>")
+			}
+		}(oldDevID)
+	}
+
 	log.Info(fmt.Sprintf("Audio output destination switched to: %s", deviceID))
 	go m.saveState()
 	return nil
@@ -517,7 +537,7 @@ func (m *Manager) GetNowPlaying() NowPlayingInfo {
 func (m *Manager) PlayStream(ctx context.Context, streamURL string, meta TrackMetadata, timeOffset float64) error {
 	meta.Stream = streamURL
 	if m.GetActiveDevice() != string(DeviceTypeLocal) && m.session != nil {
-		return m.session.SetQueue([]TrackMetadata{meta}, 0, timeOffset, "")
+		return m.session.SetQueue([]TrackMetadata{meta}, 0, timeOffset, "", true)
 	}
 	return m.playTrackOnDevice(ctx, m.GetActiveDevice(), meta, timeOffset)
 }

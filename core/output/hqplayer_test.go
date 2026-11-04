@@ -144,13 +144,13 @@ func TestHQPlayerClient_PlayRawStreamAndControl(t *testing.T) {
 		}
 	}
 
-	// Verify Pause maps to <Stop/>
+	// Verify Pause maps to <Stop/> and <PlaylistClear/> to release audio DAC
 	received = nil
 	if err := client.Control(context.Background(), cfg, "pause", 0, 0); err != nil {
 		t.Fatalf("Control(pause) failed: %v", err)
 	}
-	if len(received) != 1 || received[0] != "<Stop/>" {
-		t.Fatalf("expected pause to send <Stop/>, got %v", received)
+	if len(received) != 2 || received[0] != "<Stop/>" || received[1] != "<PlaylistClear/>" {
+		t.Fatalf("expected pause to send <Stop/> and <PlaylistClear/>, got %v", received)
 	}
 }
 

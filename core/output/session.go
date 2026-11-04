@@ -53,7 +53,7 @@ func (s *PlayerSession) SetPlayMode(mode string) {
 	}
 }
 
-func (s *PlayerSession) SetQueue(tracks []TrackMetadata, startIndex int, timeOffset float64, playMode string) error {
+func (s *PlayerSession) SetQueue(tracks []TrackMetadata, startIndex int, timeOffset float64, playMode string, autoPlay bool) error {
 	s.mu.Lock()
 
 	if playMode != "" {
@@ -88,7 +88,6 @@ func (s *PlayerSession) SetQueue(tracks []TrackMetadata, startIndex int, timeOff
 	s.currentIndex = startIndex
 	s.timeOffset = timeOffset
 	s.startedAt = time.Now().UnixMilli()
-	s.state = "playing"
 
 	if len(s.queue) == 0 {
 		s.state = "stopped"
@@ -96,6 +95,15 @@ func (s *PlayerSession) SetQueue(tracks []TrackMetadata, startIndex int, timeOff
 		return nil
 	}
 
+	if !autoPlay {
+		s.state = "stopped"
+		devID := s.deviceID
+		s.mu.Unlock()
+		log.Info(fmt.Sprintf("PlayerSession [%s]: SetQueue loaded %d tracks into queue (idle, not auto-playing)", devID, len(tracks)))
+		return nil
+	}
+
+	s.state = "playing"
 	track := s.queue[s.currentIndex]
 	s.armTimerLocked(track.Duration, timeOffset, curEpoch)
 	devID := s.deviceID

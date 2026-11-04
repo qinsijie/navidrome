@@ -134,23 +134,36 @@ const Player = () => {
     }
   }, [playerState.queue, playerState.savedPlayIndex])
 
-  const [activeOutputDevice, setActiveOutputDevice] = useState(
-    () => localStorage.getItem('nd_active_output_device') || 'local',
-  )
+  const [activeOutputDevice, setActiveOutputDevice] = useState('local')
   const activeOutputDeviceRef = useRef(activeOutputDevice)
   activeOutputDeviceRef.current = activeOutputDevice
   const activeDeviceNameRef = useRef('HQPlayer')
+  const isQueueOpenRef = useRef(false)
+
+  // Listen to popstate so mobile back gesture closes queue panel without leaving page
+  useEffect(() => {
+    const handlePopState = () => {
+      if (isQueueOpenRef.current) {
+        const closeBtn = document.querySelector(
+          '.audio-lists-panel-header-close-btn',
+        )
+        if (closeBtn) {
+          isQueueOpenRef.current = false
+          closeBtn.click()
+        }
+      }
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => {
+      window.removeEventListener('popstate', handlePopState)
+    }
+  }, [])
 
   useEffect(() => {
     httpClient('/api/output/devices?enabled_only=true')
       .then(({ json }) => {
-        const localStored = localStorage.getItem('nd_active_output_device') || 'local'
-        if (localStored === 'local') {
-          setActiveOutputDevice('local')
-        } else if (json?.activeId) {
-          setActiveOutputDevice(json.activeId)
-          localStorage.setItem('nd_active_output_device', json.activeId)
-          const activeDev = json.devices?.find((d) => d.id === json.activeId)
+        if (json?.devices) {
+          const activeDev = json.devices.find((d) => d.id === 'hqplayer')
           if (activeDev?.name) {
             activeDeviceNameRef.current = activeDev.name
           }
@@ -255,6 +268,11 @@ const Player = () => {
   const lastSyncedQueueKeyRef = useRef('')
   useEffect(() => {
     if (activeOutputDevice === 'local' || !playerState.queue.length) return
+    // STRICT GUARD: Only sync queue if audio is actively playing!
+    // Never send queue or start remote playback in background when paused or on page load.
+    const isPlaying = audioInstance && !audioInstance.paused && !audioInstance.ended
+    if (!isPlaying) return
+
     const currentIdx = playerState.playIndex ?? playerState.savedPlayIndex ?? 0
     const queueKey = `${playerState.queue.map((t) => t.trackId).join(',')}_${currentIdx}`
     if (lastSyncedQueueKeyRef.current === queueKey) return
@@ -276,9 +294,10 @@ const Player = () => {
         startIndex: currentIdx,
         timeOffset: (audioInstance?.currentTime && audioInstance.currentTime >= 1.0) ? audioInstance.currentTime : 0,
         playMode: playerState.mode,
+        autoPlay: true,
       }),
     }).catch(() => {})
-  }, [activeOutputDevice, playerState.queue, playerState.playIndex, playerState.mode, playerState.clear])
+  }, [activeOutputDevice, playerState.queue, playerState.playIndex, playerState.mode, playerState.clear, audioInstance])
 
   // Sync state from server session every 2 seconds
   useInterval(
@@ -754,7 +773,7 @@ const Player = () => {
         if (!document.hidden && !isHiddenRef.current) {
           httpClient('/api/output/control', {
             method: 'POST',
-            body: JSON.stringify({ action: 'pause' }),
+            body: JSON.stringify({ action: 'stop' }),
           }).catch(() => {})
         }
       }
@@ -1145,6 +1164,23 @@ const Player = () => {
         onCoverClick={onCoverClick}
         onAudioError={onAudioError}
         onBeforeDestroy={onBeforeDestroy}
+        onAudioListsPanelChange={(panelVisible) => {
+          if (panelVisible) {
+            isQueueOpenRef.current = true
+            try {
+              window.history.pushState({ nd_modal: 'queue' }, '')
+            } catch (e) {}
+          } else {
+            if (isQueueOpenRef.current) {
+              isQueueOpenRef.current = false
+              if (window.history.state?.nd_modal === 'queue') {
+                try {
+                  window.history.back()
+                } catch (e) {}
+              }
+            }
+          }
+        }}
         getAudioInstance={setAudioInstance}
       />
       <GlobalHotKeys handlers={handlers} keyMap={keyMap} allowChanges />

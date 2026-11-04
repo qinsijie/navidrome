@@ -208,7 +208,7 @@ func (c *HQPlayerClient) Control(ctx context.Context, cfg HQPlayerConfig, action
 		_, err := c.SendHQPlayerXMLCommands(ctx, cfg, "<Play/>")
 		return err
 	case "pause", "stop":
-		_, err := c.SendHQPlayerXMLCommands(ctx, cfg, "<Stop/>")
+		_, err := c.SendHQPlayerXMLCommands(ctx, cfg, "<Stop/>", "<PlaylistClear/>")
 		return err
 	case "seek":
 		if timeOffset < 1.0 {

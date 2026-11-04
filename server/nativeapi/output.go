@@ -59,6 +59,7 @@ type setQueueRequest struct {
 	StartIndex int                    `json:"startIndex"`
 	TimeOffset float64                `json:"timeOffset,omitempty"`
 	PlayMode   string                 `json:"playMode,omitempty"`
+	AutoPlay   bool                   `json:"autoPlay,omitempty"`
 }
 
 func resolveOutboundURL(r *http.Request, rawURL string, targetHost string) string {
@@ -189,7 +190,7 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"devices":    devices,
-			"activeId":   mgr.GetActiveDevice(),
+			"activeId":   string(output.DeviceTypeLocal),
 			"hqConfig":   mgr.GetHQPlayerConfig(),
 			"nowPlaying": mgr.GetNowPlaying(),
 		})
@@ -333,7 +334,7 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			}
 		}
 
-		if err := mgr.GetSession().SetQueue(req.Tracks, req.StartIndex, req.TimeOffset, req.PlayMode); err != nil {
+		if err := mgr.GetSession().SetQueue(req.Tracks, req.StartIndex, req.TimeOffset, req.PlayMode, req.AutoPlay); err != nil {
 			log.Error(r.Context(), "Failed to set output queue", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

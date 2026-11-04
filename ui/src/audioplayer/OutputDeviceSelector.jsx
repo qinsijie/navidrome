@@ -125,7 +125,7 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
   const notify = useNotify()
   const [anchorEl, setAnchorEl] = useState(null)
   const [devices, setDevices] = useState([])
-  const [activeId, setActiveId] = useState(() => localStorage.getItem('nd_active_output_device') || 'local')
+  const [activeId, setActiveId] = useState('local')
   const [nowPlaying, setNowPlaying] = useState(null)
 
   const loadDevices = useCallback(() => {
@@ -133,13 +133,6 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
       .then(({ json }) => {
         if (json) {
           if (json.devices) setDevices(json.devices)
-          const localStored = localStorage.getItem('nd_active_output_device') || 'local'
-          if (localStored === 'local') {
-            setActiveId('local')
-          } else if (json.activeId) {
-            setActiveId(json.activeId)
-            localStorage.setItem('nd_active_output_device', json.activeId)
-          }
           if (json.nowPlaying) {
             setNowPlaying(json.nowPlaying)
           }
@@ -165,16 +158,19 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
     if (dev.id === 'local') {
       // Local browser / device playback is private to current device
       setActiveId('local')
-      localStorage.setItem('nd_active_output_device', 'local')
       window.dispatchEvent(
         new CustomEvent('nd:output-device-changed', { detail: { deviceId: 'local', device: dev } }),
       )
-      // Best-effort notify server without blocking or throwing Forbidden
+      // Best-effort notify server and immediately release remote audio hardware
       httpClient('/api/output/device', {
         method: 'POST',
         body: JSON.stringify({ deviceId: 'local' }),
       }).catch(() => {})
-      notify('音频输出已切换至: 本机播放', 'info')
+      httpClient('/api/output/control', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'stop' }),
+      }).catch(() => {})
+      notify('音频输出已切换至: 本机播放 (已释放远端设备)', 'info')
       handleClose()
       return
     }
@@ -185,11 +181,10 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
     })
       .then(() => {
         setActiveId(dev.id)
-        localStorage.setItem('nd_active_output_device', dev.id)
         window.dispatchEvent(
           new CustomEvent('nd:output-device-changed', { detail: { deviceId: dev.id, device: dev } }),
         )
-        notify(`音频输出已切换至: ${dev.name}`, 'info')
+        notify(`已选择输出设备: ${dev.name} (点击播放按钮时推流)`, 'info')
         handleClose()
       })
       .catch((err) => {
