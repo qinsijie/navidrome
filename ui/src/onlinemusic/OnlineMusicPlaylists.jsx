@@ -185,38 +185,39 @@ export const OnlineMusicPlaylists = () => {
     setDetailData(null)
   }
 
-  const handlePlayTrack = async (track, e) => {
-    if (e) e.stopPropagation()
-    setActingId(track.id)
-    try {
-      const res = await ensureShadowTrack(track)
-      if (res && res.mediaFile) {
-        const mf = res.mediaFile
-        dispatch(playTracks({ [mf.id]: mf }, [mf.id], mf.id))
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to play track:', err)
-    } finally {
-      setActingId(null)
+  const buildClientMediaFile = (track) => {
+    const q = track.quality || 'flac'
+    return {
+      id: track.id,
+      title: track.title,
+      artist: track.artist || '未知歌手',
+      album: track.album || '',
+      duration: track.duration || 240,
+      path: `online://${track.source}/${track.songId}/${q}`,
+      hasCoverArt: !!track.cover,
     }
   }
 
-  const handlePlayAll = async () => {
+  const handlePlayTrack = (track, e) => {
+    if (e) e.stopPropagation()
+    const mf = buildClientMediaFile(track)
+    dispatch(playTracks({ [mf.id]: mf }, [mf.id], mf.id))
+    ensureShadowTrack(track).catch(() => {})
+  }
+
+  const handlePlayAll = () => {
     if (!detailData || !detailData.list || detailData.list.length === 0) return
     const firstTrack = detailData.list[0]
-    await handlePlayTrack(firstTrack)
+    const firstMf = buildClientMediaFile(firstTrack)
+    dispatch(playTracks({ [firstMf.id]: firstMf }, [firstMf.id], firstMf.id))
+    ensureShadowTrack(firstTrack).catch(() => {})
 
-    for (let i = 1; i < Math.min(detailData.list.length, 30); i++) {
-      try {
-        const res = await ensureShadowTrack(detailData.list[i])
-        if (res && res.mediaFile) {
-          dispatch(addTracks({ [res.mediaFile.id]: res.mediaFile }, [res.mediaFile.id]))
-        }
-      } catch (e) {
-        // ignore
-      }
-    }
+    const remaining = detailData.list.slice(1, 30)
+    remaining.forEach((track) => {
+      const mf = buildClientMediaFile(track)
+      dispatch(addTracks({ [mf.id]: mf }, [mf.id]))
+      ensureShadowTrack(track).catch(() => {})
+    })
   }
 
   const handleAddToPlaylist = async (track, e) => {

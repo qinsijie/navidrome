@@ -122,11 +122,7 @@ const PlayerToolbar = ({ id, isRadio }) => {
           {loveButton}
         </li>
       ) : (
-        <>
-          <li className={`${classes.mobileZoneItem} item`}>{outputSelector}</li>
-          <li className={`${listItemClass} item`}>{saveQueueButton}</li>
-          <li className={`${listItemClass} item`}>{loveButton}</li>
-        </>
+        <li className={`${classes.mobileZoneItem} item`}>{outputSelector}</li>
       )}
     </>
   )

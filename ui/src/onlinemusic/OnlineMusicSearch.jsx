@@ -35,12 +35,31 @@ import { QualityBadge, SourceBadge } from './QualityBadge'
 
 const useStyles = makeStyles((theme) => ({
   root: {
-    padding: theme.spacing(2, 3),
+    padding: theme.spacing(1.5),
+    [theme.breakpoints.up('md')]: {
+      padding: theme.spacing(2, 3),
+    },
     width: '100%',
-    maxWidth: '100%',
+    maxWidth: '100vw',
     margin: 0,
     boxSizing: 'border-box',
+    overflowX: 'hidden',
     paddingBottom: 110,
+  },
+  card: {
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    overflowX: 'hidden',
+    borderRadius: 12,
+  },
+  cardContent: {
+    padding: theme.spacing(1.5),
+    [theme.breakpoints.up('sm')]: {
+      padding: theme.spacing(2),
+    },
+    boxSizing: 'border-box',
+    overflowX: 'hidden',
   },
   topBar: {
     display: 'flex',
@@ -55,25 +74,31 @@ const useStyles = makeStyles((theme) => ({
     alignItems: 'center',
     position: 'relative',
     marginBottom: theme.spacing(2),
-    gap: theme.spacing(1.5),
+    gap: theme.spacing(1),
+    width: '100%',
+    boxSizing: 'border-box',
   },
   sourceSelectBtn: {
     textTransform: 'none',
     fontWeight: 600,
-    minWidth: 120,
-    fontSize: '0.95rem',
-    height: 48,
+    minWidth: 84,
+    maxWidth: 110,
+    fontSize: '0.85rem',
+    height: 44,
+    padding: '0 8px',
     border: `1px solid ${theme.palette.divider}`,
     borderRadius: 8,
+    flexShrink: 0,
   },
   searchBoxContainer: {
     position: 'relative',
     flex: 1,
+    minWidth: 0,
   },
   searchInput: {
     '& .MuiOutlinedInput-root': {
       borderRadius: 8,
-      height: 48,
+      height: 44,
     },
   },
   tipsPaper: {
@@ -98,52 +123,81 @@ const useStyles = makeStyles((theme) => ({
   },
   trackList: {
     padding: 0,
+    width: '100%',
+    boxSizing: 'border-box',
   },
   trackItem: {
     display: 'flex',
     alignItems: 'center',
-    padding: '12px 16px',
-    borderRadius: 8,
+    padding: '10px 6px',
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    borderRadius: 6,
     borderBottom: `1px solid ${theme.palette.divider}`,
     transition: 'background-color 0.15s ease',
     cursor: 'pointer',
+    overflow: 'hidden',
     '&:hover': {
       backgroundColor: theme.palette.action.hover,
     },
   },
   indexCol: {
-    width: 36,
+    width: 26,
+    minWidth: 26,
     textAlign: 'center',
     color: theme.palette.text.secondary,
-    fontSize: '0.875rem',
-    marginRight: 12,
+    fontSize: '0.8rem',
+    marginRight: 6,
+    flexShrink: 0,
   },
   trackMain: {
     flex: 1,
     minWidth: 0,
+    overflow: 'hidden',
+    marginRight: 6,
   },
   trackTitle: {
     fontWeight: 600,
-    fontSize: '0.95rem',
+    fontSize: '0.9rem',
     color: theme.palette.text.primary,
-    marginBottom: 3,
+    marginBottom: 2,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
+    maxWidth: '100%',
   },
   trackMeta: {
     display: 'flex',
     alignItems: 'center',
-    fontSize: '0.8rem',
+    fontSize: '0.75rem',
     color: theme.palette.text.secondary,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
+    minWidth: 0,
+    maxWidth: '100%',
+    gap: 4,
+  },
+  artistText: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    minWidth: 0,
+    flexShrink: 1,
   },
   durationCol: {
     color: theme.palette.text.secondary,
-    fontSize: '0.85rem',
-    marginRight: 12,
+    fontSize: '0.8rem',
+    width: 44,
+    minWidth: 44,
+    textAlign: 'right',
+    marginRight: 4,
+    flexShrink: 0,
+  },
+  actionButton: {
+    padding: 4,
+    flexShrink: 0,
   },
   loadingContainer: {
     display: 'flex',
@@ -268,38 +322,33 @@ export const OnlineMusicSearch = () => {
     return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`
   }
 
-  const handlePlay = async (track, e) => {
-    if (e) e.stopPropagation()
-    setActingId(track.id)
-    try {
-      const res = await ensureShadowTrack(track)
-      if (res && res.mediaFile) {
-        const mf = res.mediaFile
-        dispatch(playTracks({ [mf.id]: mf }, [mf.id], mf.id))
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to play online track:', err)
-    } finally {
-      setActingId(null)
+  const buildClientMediaFile = (track) => {
+    const q = track.quality || 'flac'
+    return {
+      id: track.id,
+      title: track.title,
+      artist: track.artist || '未知歌手',
+      album: track.album || '',
+      duration: track.duration || 240,
+      path: `online://${track.source}/${track.songId}/${q}`,
+      hasCoverArt: !!track.cover,
     }
   }
 
-  const handleAddToQueue = async (track, e) => {
+  const handlePlay = (track, e) => {
     if (e) e.stopPropagation()
-    setActingId(track.id)
-    try {
-      const res = await ensureShadowTrack(track)
-      if (res && res.mediaFile) {
-        const mf = res.mediaFile
-        dispatch(addTracks({ [mf.id]: mf }, [mf.id]))
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to add to queue:', err)
-    } finally {
-      setActingId(null)
-    }
+    const mf = buildClientMediaFile(track)
+    // Synchronously dispatch within user gesture to guarantee mobile autoplay
+    dispatch(playTracks({ [mf.id]: mf }, [mf.id], mf.id))
+    // Sync to backend shadow track without blocking audio playback
+    ensureShadowTrack(track).catch(() => {})
+  }
+
+  const handleAddToQueue = (track, e) => {
+    if (e) e.stopPropagation()
+    const mf = buildClientMediaFile(track)
+    dispatch(addTracks({ [mf.id]: mf }, [mf.id]))
+    ensureShadowTrack(track).catch(() => {})
   }
 
   const handleAddToPlaylist = async (track, e) => {
@@ -323,8 +372,8 @@ export const OnlineMusicSearch = () => {
 
   return (
     <div className={classes.root}>
-      <Card>
-        <CardContent>
+      <Card className={classes.card}>
+        <CardContent className={classes.cardContent}>
           <div className={classes.topBar}>
             <Box display="flex" alignItems="center">
               <SearchIcon style={{ marginRight: 8, color: '#3B82F6' }} />
@@ -459,12 +508,10 @@ export const OnlineMusicSearch = () => {
                     <div className={classes.trackMeta}>
                       <QualityBadge quality={track.quality || 'flac'} />
                       <SourceBadge source={track.source} />
-                      <span>{track.artist || '未知歌手'}</span>
-                      {track.album && (
-                        <span style={{ marginLeft: 6, opacity: 0.8 }}>
-                          - {track.album}
-                        </span>
-                      )}
+                      <span className={classes.artistText}>
+                        {track.artist || '未知歌手'}
+                        {track.album ? ` - ${track.album}` : ''}
+                      </span>
                     </div>
                   </div>
 
@@ -474,6 +521,7 @@ export const OnlineMusicSearch = () => {
 
                   <IconButton
                     size="small"
+                    className={classes.actionButton}
                     onClick={(e) => {
                       e.stopPropagation()
                       setMenuAnchorEl(e.currentTarget)
