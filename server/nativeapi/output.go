@@ -42,7 +42,9 @@ type addDLNARequest struct {
 }
 
 type playbackControlRequest struct {
-	Action        string  `json:"action"` // play, pause, stop, next, prev, jump, seek, volume, playMode
+	Channel       string  `json:"channel,omitempty"` // "local" or "remote"
+	DeviceID      string  `json:"deviceId,omitempty"`
+	Action        string  `json:"action"` // play, pause, stop, next, prev, jump, seek, volume, playMode, clear
 	Index         int     `json:"index,omitempty"`
 	TimeOffset    float64 `json:"timeOffset,omitempty"`
 	Volume        int     `json:"volume,omitempty"` // 0-100
@@ -51,6 +53,8 @@ type playbackControlRequest struct {
 }
 
 type playStreamRequest struct {
+	Channel       string  `json:"channel,omitempty"` // "local" or "remote"
+	DeviceID      string  `json:"deviceId,omitempty"`
 	TrackID       string  `json:"trackId"`
 	Title         string  `json:"title"`
 	Artist        string  `json:"artist"`
@@ -62,6 +66,8 @@ type playStreamRequest struct {
 }
 
 type setQueueRequest struct {
+	Channel       string                 `json:"channel,omitempty"` // "local" or "remote"
+	DeviceID      string                 `json:"deviceId,omitempty"`
 	Tracks        []output.TrackMetadata `json:"tracks"`
 	StartIndex    int                    `json:"startIndex"`
 	TimeOffset    float64                `json:"timeOffset,omitempty"`
@@ -220,6 +226,10 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			CurrentIndex: state.CurrentIndex,
 			SourceClient: state.SourceClient,
 			Queue:        state.Queue,
+			Channel:      state.ActiveEvent,
+			ActiveEvent:  state.ActiveEvent,
+			Local:        state.Local,
+			Remote:       state.Remote,
 		}
 		events.GetBroker().SendMessage(senderCtx, evt)
 	})
@@ -263,18 +273,18 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 				})
 				return
 			}
-		} else if req.DeviceID == string(output.DeviceTypeLocal) {
-			mgr.ReleaseHQPlayerLease(user.ID)
+			if err := mgr.SetActiveDevice(req.DeviceID); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else if req.DeviceID != string(output.DeviceTypeLocal) && req.DeviceID != "" {
+			if err := mgr.SetActiveDevice(req.DeviceID); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
-
-		if err := mgr.SetActiveDevice(req.DeviceID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
-		clientUID, _ := request.ClientUniqueIdFrom(r.Context())
-		sess.UpdatePlayback(r.Context(), sess.Snapshot().State, sess.Snapshot().Track, sess.Snapshot().CurrentIndex, sess.Snapshot().TimeOffset, sess.Snapshot().PlayMode, req.DeviceID, clientUID)
+		// Note: When switching to "local", we do NOT release HQPlayer or stop remote hardware.
+		// "Local" and "Remote" operate as independent dual tracks.
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -367,8 +377,15 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 	r.Get("/output/queue", func(w http.ResponseWriter, r *http.Request) {
 		user, _ := request.UserFrom(r.Context())
 		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
+		channel := r.URL.Query().Get("channel")
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(sess.Snapshot())
+		if channel == "local" {
+			_ = json.NewEncoder(w).Encode(sess.Snapshot("local"))
+		} else if channel == "remote" {
+			_ = json.NewEncoder(w).Encode(sess.Snapshot("remote"))
+		} else {
+			_ = json.NewEncoder(w).Encode(sess.DualSnapshot("local", ""))
+		}
 	})
 
 	r.Post("/output/queue", func(w http.ResponseWriter, r *http.Request) {
@@ -376,6 +393,16 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
+		}
+
+		targetChannel := output.NormalizeChannel(req.Channel, req.DeviceID)
+		targetDev := req.DeviceID
+		if targetDev == "" {
+			if targetChannel == "remote" {
+				targetDev = mgr.GetActiveDevice()
+			} else {
+				targetDev = string(output.DeviceTypeLocal)
+			}
 		}
 
 		targetHost := mgr.GetActiveTargetHost()
@@ -406,24 +433,24 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		}
 
 		user, _ := request.UserFrom(r.Context())
-		if req.AutoPlay && mgr.GetActiveDevice() == "hqplayer" {
-			canAccess, owner := mgr.CheckHQPlayerAccess(user.ID, user.UserName, req.ForceTakeover)
-			if !canAccess {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusConflict)
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"status":     "conflict",
-					"code":       "HQPLAYER_OCCUPIED",
-					"occupiedBy": owner,
-				})
-				return
+		if targetChannel == "remote" {
+			if req.AutoPlay && (targetDev == "hqplayer" || mgr.GetActiveDevice() == "hqplayer") {
+				canAccess, owner := mgr.CheckHQPlayerAccess(user.ID, user.UserName, req.ForceTakeover)
+				if !canAccess {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusConflict)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"status":     "conflict",
+						"code":       "HQPLAYER_OCCUPIED",
+						"occupiedBy": owner,
+					})
+					return
+				}
+				if len(req.Tracks) > req.StartIndex && req.StartIndex >= 0 {
+					mgr.AcquireHQPlayerLease(user.ID, user.UserName, req.Tracks[req.StartIndex])
+				}
 			}
-			if len(req.Tracks) > req.StartIndex && req.StartIndex >= 0 {
-				mgr.AcquireHQPlayerLease(user.ID, user.UserName, req.Tracks[req.StartIndex])
-			}
-		}
 
-		if mgr.GetActiveDevice() != string(output.DeviceTypeLocal) {
 			if err := mgr.GetSession().SetQueue(req.Tracks, req.StartIndex, req.TimeOffset, req.PlayMode, req.AutoPlay); err != nil {
 				log.Error(r.Context(), "Failed to set output queue", err)
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -433,17 +460,17 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 
 		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
 		clientUID, _ := request.ClientUniqueIdFrom(r.Context())
-		userSnap := sess.SetQueue(r.Context(), req.Tracks, req.StartIndex, req.TimeOffset, req.PlayMode, req.AutoPlay, mgr.GetActiveDevice(), clientUID)
+		dualSnap := sess.SetQueue(r.Context(), targetChannel, req.Tracks, req.StartIndex, req.TimeOffset, req.PlayMode, req.AutoPlay, targetDev, clientUID)
 
-		// When output device is HQPlayer, report playback on behalf of the user to scrobbler
-		if req.AutoPlay && mgr.GetActiveDevice() == "hqplayer" && userSnap.Track.TrackID != "" {
+		// When output device is HQPlayer and remote channel is playing, report playback to scrobbler
+		if targetChannel == "remote" && req.AutoPlay && (targetDev == "hqplayer" || mgr.GetActiveDevice() == "hqplayer") && dualSnap.Remote.Track.TrackID != "" {
 			if tracker := scrobbler.GetActivePlayTracker(); tracker != nil {
 				_ = tracker.ReportPlayback(r.Context(), scrobbler.ReportPlaybackParams{
-					MediaId:      userSnap.Track.TrackID,
+					MediaId:      dualSnap.Remote.Track.TrackID,
 					PositionMs:   int64(req.TimeOffset * 1000),
 					State:        scrobbler.StatePlaying,
 					PlaybackRate: 1.0,
-					ClientId:     "user:" + user.ID,
+					ClientId:     "user:" + user.ID + ":remote",
 					ClientName:   "HQPlayer (" + user.UserName + ")",
 				})
 			}
@@ -452,7 +479,11 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":      "ok",
-			"userSession": userSnap,
+			"channel":     targetChannel,
+			"userSession": dualSnap,
+			"nowPlaying":  mgr.GetNowPlaying(),
+		})
+	})
 			"nowPlaying":  mgr.GetNowPlaying(),
 		})
 	})
@@ -514,22 +545,50 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			Stream:   resolvedURL,
 			Duration: duration,
 		}
-		if mgr.GetActiveDevice() == "hqplayer" {
-			mgr.AcquireHQPlayerLease(user.ID, user.UserName, meta)
+		targetChannel := output.NormalizeChannel(req.Channel, req.DeviceID)
+		targetDev := req.DeviceID
+		if targetDev == "" {
+			if targetChannel == "remote" {
+				targetDev = mgr.GetActiveDevice()
+			} else {
+				targetDev = string(output.DeviceTypeLocal)
+			}
 		}
-		if err := mgr.PlayStream(r.Context(), resolvedURL, meta, req.TimeOffset); err != nil {
-			log.Error(r.Context(), "Failed to play stream on output device", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+
+		if targetChannel == "remote" {
+			if targetDev == "hqplayer" || mgr.GetActiveDevice() == "hqplayer" {
+				canAccess, owner := mgr.CheckHQPlayerAccess(user.ID, user.UserName, req.ForceTakeover)
+				if !canAccess {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusConflict)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"status":     "conflict",
+						"code":       "HQPLAYER_OCCUPIED",
+						"occupiedBy": owner,
+					})
+					return
+				}
+				mgr.AcquireHQPlayerLease(user.ID, user.UserName, meta)
+			}
+			if err := mgr.PlayStream(r.Context(), resolvedURL, meta, req.TimeOffset); err != nil {
+				log.Error(r.Context(), "Failed to play stream on output device", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
 		clientUID, _ := request.ClientUniqueIdFrom(r.Context())
-		sess.UpdatePlayback(r.Context(), "playing", meta, -1, req.TimeOffset, "", mgr.GetActiveDevice(), clientUID)
+		dualSnap := sess.UpdatePlayback(r.Context(), targetChannel, "playing", meta, -1, req.TimeOffset, "", targetDev, clientUID)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "nowPlaying": mgr.GetNowPlaying()})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":      "ok",
+			"channel":     targetChannel,
+			"userSession": dualSnap,
+			"nowPlaying":  mgr.GetNowPlaying(),
+		})
 	})
 
 	r.Post("/output/control", func(w http.ResponseWriter, r *http.Request) {
@@ -539,26 +598,38 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			return
 		}
 
+		targetChannel := output.NormalizeChannel(req.Channel, req.DeviceID)
+		targetDev := req.DeviceID
+		if targetDev == "" {
+			if targetChannel == "remote" {
+				targetDev = mgr.GetActiveDevice()
+			} else {
+				targetDev = string(output.DeviceTypeLocal)
+			}
+		}
+
 		user, _ := request.UserFrom(r.Context())
-		if req.Action == "pause" || req.Action == "stop" {
-			mgr.ReleaseHQPlayerLease(user.ID)
-		}
-
-		if req.Action == "seek" && req.TimeOffset < 1.0 {
-			req.TimeOffset = 0
-		}
-		if err := mgr.ControlPlaybackWithDetails(r.Context(), req.Action, req.Index, req.TimeOffset, req.Volume, req.Mode); err != nil {
-			log.Error(r.Context(), "Failed to control output device", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
 		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
 		clientUID, _ := request.ClientUniqueIdFrom(r.Context())
 
+		if targetChannel == "remote" {
+			if req.Action == "pause" || req.Action == "stop" {
+				mgr.ReleaseHQPlayerLease(user.ID)
+			}
+
+			if req.Action == "seek" && req.TimeOffset < 1.0 {
+				req.TimeOffset = 0
+			}
+			if err := mgr.ControlPlaybackWithDetails(r.Context(), req.Action, req.Index, req.TimeOffset, req.Volume, req.Mode); err != nil {
+				log.Error(r.Context(), "Failed to control output device", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
 		stateStr := "playing"
 		targetIndex := req.Index
-		snap := sess.Snapshot()
+		snap := sess.Snapshot(targetChannel)
 		currentTrack := snap.Track
 
 		switch req.Action {
@@ -571,10 +642,15 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		case "seek":
 			stateStr = snap.State
 		case "clear":
-			clearSnap := sess.ClearQueue(r.Context(), clientUID)
+			clearSnap := sess.ClearQueue(r.Context(), targetChannel, clientUID)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "userSession": clearSnap, "nowPlaying": mgr.GetNowPlaying()})
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":      "ok",
+				"channel":     targetChannel,
+				"userSession": clearSnap,
+				"nowPlaying":  mgr.GetNowPlaying(),
+			})
 			return
 		case "next":
 			stateStr = "playing"
@@ -596,16 +672,16 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			}
 		}
 
-		userSnap := sess.UpdatePlayback(r.Context(), stateStr, currentTrack, targetIndex, req.TimeOffset, req.Mode, "", clientUID)
+		dualSnap := sess.UpdatePlayback(r.Context(), targetChannel, stateStr, currentTrack, targetIndex, req.TimeOffset, req.Mode, targetDev, clientUID)
 
-		if mgr.GetActiveDevice() == "hqplayer" {
+		if targetChannel == "remote" && (targetDev == "hqplayer" || mgr.GetActiveDevice() == "hqplayer") {
 			if tracker := scrobbler.GetActivePlayTracker(); tracker != nil && currentTrack.TrackID != "" {
 				_ = tracker.ReportPlayback(r.Context(), scrobbler.ReportPlaybackParams{
 					MediaId:      currentTrack.TrackID,
 					PositionMs:   int64(req.TimeOffset * 1000),
 					State:        stateStr,
 					PlaybackRate: 1.0,
-					ClientId:     "user:" + user.ID,
+					ClientId:     "user:" + user.ID + ":remote",
 					ClientName:   "HQPlayer (" + user.UserName + ")",
 				})
 			}
@@ -613,7 +689,12 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "userSession": userSnap, "nowPlaying": mgr.GetNowPlaying()})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":      "ok",
+			"channel":     targetChannel,
+			"userSession": dualSnap,
+			"nowPlaying":  mgr.GetNowPlaying(),
+		})
 	})
 
 	r.Post("/output/pause", func(w http.ResponseWriter, r *http.Request) {

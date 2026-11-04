@@ -86,6 +86,10 @@ type UserPlaybackState struct {
 	CurrentIndex int     `json:"currentIndex"`
 	SourceClient string  `json:"sourceClient,omitempty"`
 	Queue        any     `json:"queue,omitempty"`
+	Channel      string  `json:"channel,omitempty"`     // "local" or "remote"
+	ActiveEvent  string  `json:"activeEvent,omitempty"` // "local" or "remote"
+	Local        any     `json:"local,omitempty"`       // ChannelSessionState
+	Remote       any     `json:"remote,omitempty"`      // ChannelSessionState
 }
 
 func (rr *RefreshResource) With(resource string, ids ...string) *RefreshResource {

@@ -10,9 +10,32 @@ import (
 	"github.com/navidrome/navidrome/log"
 )
 
-type UserSessionState struct {
-	UserID       string          `json:"userId"`
-	UserName     string          `json:"userName"`
+// ChannelSessionState represents the playback snapshot of a single independent audio track/channel.
+type ChannelSessionState struct {
+	Channel      string          `json:"channel"`      // "local" or "remote"
+	DeviceID     string          `json:"deviceId"`     // "local", "hqplayer", or DLNA UUID
+	DeviceName   string          `json:"deviceName"`   // e.g. "本机播放", "HQPlayer - 客厅"
+	Track        TrackMetadata   `json:"track"`
+	Queue        []TrackMetadata `json:"queue"`
+	State        string          `json:"state"` // "playing", "paused", "stopped"
+	TimeOffset   float64         `json:"timeOffset"`
+	StartedAt    int64           `json:"startedAt"`
+	Epoch        uint64          `json:"epoch"`
+	PlayMode     string          `json:"playMode"`
+	CurrentIndex int             `json:"currentIndex"`
+	SourceClient string          `json:"sourceClient,omitempty"`
+}
+
+// DualSessionState represents the complete dual-track state (Local + Remote) of a user session.
+type DualSessionState struct {
+	UserID       string              `json:"userId"`
+	UserName     string              `json:"userName"`
+	ActiveEvent  string              `json:"activeEvent"` // "local" or "remote" (which channel triggered the update)
+	Local        ChannelSessionState `json:"local"`
+	Remote       ChannelSessionState `json:"remote"`
+	SourceClient string              `json:"sourceClient,omitempty"`
+
+	// Backward compatibility top-level fields for legacy callers
 	Track        TrackMetadata   `json:"track"`
 	Queue        []TrackMetadata `json:"queue"`
 	State        string          `json:"state"` // "playing", "paused", "stopped"
@@ -22,16 +45,17 @@ type UserSessionState struct {
 	OutputTarget string          `json:"outputTarget"`
 	PlayMode     string          `json:"playMode"`
 	CurrentIndex int             `json:"currentIndex"`
-	SourceClient string          `json:"sourceClient,omitempty"`
 }
 
-type StateBroadcaster func(ctx context.Context, username string, state UserSessionState)
+// Alias UserSessionState to DualSessionState for backwards compatibility
+type UserSessionState = DualSessionState
 
-type UserSession struct {
-	mu           sync.RWMutex
-	mgr          *UserSessionManager
-	userID       string
-	userName     string
+type StateBroadcaster func(ctx context.Context, username string, state DualSessionState)
+
+type channelData struct {
+	channel      string
+	deviceID     string
+	deviceName   string
 	queue        []TrackMetadata
 	currentIndex int
 	currentTrack TrackMetadata
@@ -40,174 +64,221 @@ type UserSession struct {
 	startedAt    int64
 	epoch        uint64
 	playMode     string
-	outputTarget string
 }
 
-func (s *UserSession) Snapshot() UserSessionState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	offset := s.timeOffset
-	if s.state == "playing" && s.startedAt > 0 {
-		elapsed := float64(time.Now().UnixMilli()-s.startedAt) / 1000.0
+func (c *channelData) snapshot() ChannelSessionState {
+	offset := c.timeOffset
+	if c.state == "playing" && c.startedAt > 0 {
+		elapsed := float64(time.Now().UnixMilli()-c.startedAt) / 1000.0
 		offset += elapsed
 	}
-	qCopy := make([]TrackMetadata, len(s.queue))
-	copy(qCopy, s.queue)
-	return UserSessionState{
-		UserID:       s.userID,
-		UserName:     s.userName,
-		Track:        s.currentTrack,
+	qCopy := make([]TrackMetadata, len(c.queue))
+	copy(qCopy, c.queue)
+	return ChannelSessionState{
+		Channel:      c.channel,
+		DeviceID:     c.deviceID,
+		DeviceName:   c.deviceName,
+		Track:        c.currentTrack,
 		Queue:        qCopy,
-		State:        s.state,
+		State:        c.state,
 		TimeOffset:   offset,
-		StartedAt:    s.startedAt,
-		Epoch:        s.epoch,
-		OutputTarget: s.outputTarget,
-		PlayMode:     s.playMode,
-		CurrentIndex: s.currentIndex,
+		StartedAt:    c.startedAt,
+		Epoch:        c.epoch,
+		PlayMode:     c.playMode,
+		CurrentIndex: c.currentIndex,
 	}
 }
 
-func (s *UserSession) GetQueue() []TrackMetadata {
+// UserSession maintains two fully independent playback channels (Local and Remote) for a User.
+type UserSession struct {
+	mu       sync.RWMutex
+	mgr      *UserSessionManager
+	userID   string
+	userName string
+	local    channelData
+	remote   channelData
+}
+
+// NormalizeChannel resolves the target channel ("local" or "remote").
+func NormalizeChannel(channel, deviceID string) string {
+	if channel == "remote" || channel == "local" {
+		return channel
+	}
+	if deviceID == "" || deviceID == string(DeviceTypeLocal) {
+		return "local"
+	}
+	return "remote"
+}
+
+func (s *UserSession) getChannelData(channel string) *channelData {
+	if channel == "remote" {
+		return &s.remote
+	}
+	return &s.local
+}
+
+func (s *UserSession) dualSnapshotLocked(activeEvent string, sourceClient string) DualSessionState {
+	localSnap := s.local.snapshot()
+	remoteSnap := s.remote.snapshot()
+
+	activeSnap := localSnap
+	if activeEvent == "remote" {
+		activeSnap = remoteSnap
+	}
+
+	return DualSessionState{
+		UserID:       s.userID,
+		UserName:     s.userName,
+		ActiveEvent:  activeEvent,
+		Local:        localSnap,
+		Remote:       remoteSnap,
+		SourceClient: sourceClient,
+		// Backward compatibility top-level fields mirror active event:
+		Track:        activeSnap.Track,
+		Queue:        activeSnap.Queue,
+		State:        activeSnap.State,
+		TimeOffset:   activeSnap.TimeOffset,
+		StartedAt:    activeSnap.StartedAt,
+		Epoch:        activeSnap.Epoch,
+		OutputTarget: activeSnap.DeviceID,
+		PlayMode:     activeSnap.PlayMode,
+		CurrentIndex: activeSnap.CurrentIndex,
+	}
+}
+
+// DualSnapshot returns the combined snapshot of both channels.
+func (s *UserSession) DualSnapshot(activeEvent string, sourceClient string) DualSessionState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	qCopy := make([]TrackMetadata, len(s.queue))
-	copy(qCopy, s.queue)
+	return s.dualSnapshotLocked(activeEvent, sourceClient)
+}
+
+// Snapshot returns the snapshot of a specific channel (defaults to "local").
+func (s *UserSession) Snapshot(channel ...string) ChannelSessionState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ch := "local"
+	if len(channel) > 0 && channel[0] != "" {
+		ch = channel[0]
+	}
+	return s.getChannelData(ch).snapshot()
+}
+
+// GetQueue returns the playlist of a specific channel (defaults to "local").
+func (s *UserSession) GetQueue(channel ...string) []TrackMetadata {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ch := "local"
+	if len(channel) > 0 && channel[0] != "" {
+		ch = channel[0]
+	}
+	c := s.getChannelData(ch)
+	qCopy := make([]TrackMetadata, len(c.queue))
+	copy(qCopy, c.queue)
 	return qCopy
 }
 
-func (s *UserSession) SetQueue(ctx context.Context, tracks []TrackMetadata, index int, offset float64, playMode string, autoPlay bool, outputTarget string, sourceClient string) UserSessionState {
+// SetQueue updates the playlist and starts/stops playback for the specified channel only.
+func (s *UserSession) SetQueue(ctx context.Context, channel string, tracks []TrackMetadata, index int, offset float64, playMode string, autoPlay bool, deviceID string, sourceClient string) DualSessionState {
+	ch := NormalizeChannel(channel, deviceID)
+
 	s.mu.Lock()
-	curEpoch := atomic.AddUint64(&s.epoch, 1)
-	s.queue = make([]TrackMetadata, len(tracks))
-	copy(s.queue, tracks)
+	c := s.getChannelData(ch)
+	c.epoch = atomic.AddUint64(&c.epoch, 1)
+	c.queue = make([]TrackMetadata, len(tracks))
+	copy(c.queue, tracks)
 
 	if index >= 0 && index < len(tracks) {
-		s.currentIndex = index
-		s.currentTrack = tracks[index]
+		c.currentIndex = index
+		c.currentTrack = tracks[index]
 	} else if len(tracks) > 0 {
-		s.currentIndex = 0
-		s.currentTrack = tracks[0]
+		c.currentIndex = 0
+		c.currentTrack = tracks[0]
 	} else {
-		s.currentIndex = -1
-		s.currentTrack = TrackMetadata{}
+		c.currentIndex = -1
+		c.currentTrack = TrackMetadata{}
 	}
 
-	s.timeOffset = offset
+	c.timeOffset = offset
 	if autoPlay {
-		s.state = "playing"
-		s.startedAt = time.Now().UnixMilli()
+		c.state = "playing"
+		c.startedAt = time.Now().UnixMilli()
 	} else {
-		s.state = "stopped"
-		s.startedAt = 0
+		c.state = "stopped"
+		c.startedAt = 0
 	}
 	if playMode != "" {
-		s.playMode = playMode
+		c.playMode = playMode
 	}
-	if outputTarget != "" {
-		s.outputTarget = outputTarget
+	if deviceID != "" {
+		c.deviceID = deviceID
 	}
 
-	qCopy := make([]TrackMetadata, len(s.queue))
-	copy(qCopy, s.queue)
-	snapshot := UserSessionState{
-		UserID:       s.userID,
-		UserName:     s.userName,
-		Track:        s.currentTrack,
-		Queue:        qCopy,
-		State:        s.state,
-		TimeOffset:   s.timeOffset,
-		StartedAt:    s.startedAt,
-		Epoch:        curEpoch,
-		OutputTarget: s.outputTarget,
-		PlayMode:     s.playMode,
-		CurrentIndex: s.currentIndex,
-		SourceClient: sourceClient,
-	}
+	snap := s.dualSnapshotLocked(ch, sourceClient)
 	s.mu.Unlock()
 
-	s.mgr.broadcast(ctx, s.userName, snapshot)
-	return snapshot
+	s.mgr.broadcast(ctx, s.userName, snap)
+	return snap
 }
 
-func (s *UserSession) ClearQueue(ctx context.Context, sourceClient string) UserSessionState {
-	s.mu.Lock()
-	curEpoch := atomic.AddUint64(&s.epoch, 1)
-	s.queue = make([]TrackMetadata, 0)
-	s.currentIndex = -1
-	s.currentTrack = TrackMetadata{}
-	s.state = "stopped"
-	s.startedAt = 0
-	s.timeOffset = 0
+// ClearQueue clears the playlist for the specified channel only.
+func (s *UserSession) ClearQueue(ctx context.Context, channel string, sourceClient string) DualSessionState {
+	ch := NormalizeChannel(channel, "")
 
-	snapshot := UserSessionState{
-		UserID:       s.userID,
-		UserName:     s.userName,
-		Track:        s.currentTrack,
-		Queue:        make([]TrackMetadata, 0),
-		State:        s.state,
-		TimeOffset:   s.timeOffset,
-		StartedAt:    s.startedAt,
-		Epoch:        curEpoch,
-		OutputTarget: s.outputTarget,
-		PlayMode:     s.playMode,
-		CurrentIndex: s.currentIndex,
-		SourceClient: sourceClient,
-	}
+	s.mu.Lock()
+	c := s.getChannelData(ch)
+	c.epoch = atomic.AddUint64(&c.epoch, 1)
+	c.queue = make([]TrackMetadata, 0)
+	c.currentIndex = -1
+	c.currentTrack = TrackMetadata{}
+	c.state = "stopped"
+	c.startedAt = 0
+	c.timeOffset = 0
+
+	snap := s.dualSnapshotLocked(ch, sourceClient)
 	s.mu.Unlock()
 
-	s.mgr.broadcast(ctx, s.userName, snapshot)
-	return snapshot
+	s.mgr.broadcast(ctx, s.userName, snap)
+	return snap
 }
 
-func (s *UserSession) UpdatePlayback(ctx context.Context, state string, track TrackMetadata, index int, offset float64, playMode string, outputTarget string, sourceClient string) UserSessionState {
+// UpdatePlayback updates playback state, time offset, and track on the specified channel only.
+func (s *UserSession) UpdatePlayback(ctx context.Context, channel string, state string, track TrackMetadata, index int, offset float64, playMode string, deviceID string, sourceClient string) DualSessionState {
+	ch := NormalizeChannel(channel, deviceID)
+
 	s.mu.Lock()
-	curEpoch := atomic.AddUint64(&s.epoch, 1)
+	c := s.getChannelData(ch)
+	c.epoch = atomic.AddUint64(&c.epoch, 1)
 	if state != "" {
-		s.state = state
+		c.state = state
 	}
 	if track.TrackID != "" {
-		s.currentTrack = track
+		c.currentTrack = track
 	}
-	if index >= 0 && index < len(s.queue) {
-		s.currentIndex = index
-		s.currentTrack = s.queue[index]
+	if index >= 0 && index < len(c.queue) {
+		c.currentIndex = index
+		c.currentTrack = c.queue[index]
 	} else if index >= 0 {
-		s.currentIndex = index
+		c.currentIndex = index
 	}
-	s.timeOffset = offset
-	if s.state == "playing" {
-		s.startedAt = time.Now().UnixMilli()
+	c.timeOffset = offset
+	if c.state == "playing" {
+		c.startedAt = time.Now().UnixMilli()
 	} else {
-		s.startedAt = 0
+		c.startedAt = 0
 	}
 	if playMode != "" {
-		s.playMode = playMode
+		c.playMode = playMode
 	}
-	if outputTarget != "" {
-		s.outputTarget = outputTarget
+	if deviceID != "" {
+		c.deviceID = deviceID
 	}
 
-	qCopy := make([]TrackMetadata, len(s.queue))
-	copy(qCopy, s.queue)
-	snapshot := UserSessionState{
-		UserID:       s.userID,
-		UserName:     s.userName,
-		Track:        s.currentTrack,
-		Queue:        qCopy,
-		State:        s.state,
-		TimeOffset:   s.timeOffset,
-		StartedAt:    s.startedAt,
-		Epoch:        curEpoch,
-		OutputTarget: s.outputTarget,
-		PlayMode:     s.playMode,
-		CurrentIndex: s.currentIndex,
-		SourceClient: sourceClient,
-	}
+	snap := s.dualSnapshotLocked(ch, sourceClient)
 	s.mu.Unlock()
 
-	s.mgr.broadcast(ctx, s.userName, snapshot)
-	return snapshot
+	s.mgr.broadcast(ctx, s.userName, snap)
+	return snap
 }
 
 type UserSessionManager struct {
@@ -236,7 +307,7 @@ func (m *UserSessionManager) SetBroadcaster(b StateBroadcaster) {
 	m.broadcaster = b
 }
 
-func (m *UserSessionManager) broadcast(ctx context.Context, username string, state UserSessionState) {
+func (m *UserSessionManager) broadcast(ctx context.Context, username string, state DualSessionState) {
 	m.mu.RLock()
 	b := m.broadcaster
 	m.mu.RUnlock()
@@ -260,16 +331,29 @@ func (m *UserSessionManager) GetSession(userID, userName string) *UserSession {
 	}
 
 	sess := &UserSession{
-		mgr:          m,
-		userID:       userID,
-		userName:     userName,
-		queue:        make([]TrackMetadata, 0),
-		currentIndex: -1,
-		state:        "stopped",
-		playMode:     "orderLoop",
-		outputTarget: string(DeviceTypeLocal),
+		mgr:      m,
+		userID:   userID,
+		userName: userName,
+		local: channelData{
+			channel:      "local",
+			deviceID:     string(DeviceTypeLocal),
+			deviceName:   "本机播放",
+			queue:        make([]TrackMetadata, 0),
+			currentIndex: -1,
+			state:        "stopped",
+			playMode:     "orderLoop",
+		},
+		remote: channelData{
+			channel:      "remote",
+			deviceID:     "hqplayer",
+			deviceName:   "HQPlayer",
+			queue:        make([]TrackMetadata, 0),
+			currentIndex: -1,
+			state:        "stopped",
+			playMode:     "orderLoop",
+		},
 	}
 	m.sessions[userID] = sess
-	log.Debug(fmt.Sprintf("UserSessionManager: Initialized new user playback session for user %s (%s)", userName, userID))
+	log.Debug(fmt.Sprintf("UserSessionManager: Initialized new dual-track user session for user %s (%s)", userName, userID))
 	return sess
 }

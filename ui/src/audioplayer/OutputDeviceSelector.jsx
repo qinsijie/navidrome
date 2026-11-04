@@ -187,21 +187,12 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
 
   const handleSelectDevice = (dev) => {
     if (dev.id === 'local') {
-      // Local browser / device playback is private to current device
+      // Dual-track independent playback: switching to local operates local audio without stopping remote hardware
       setActiveId('local')
       window.dispatchEvent(
         new CustomEvent('nd:output-device-changed', { detail: { deviceId: 'local', device: dev } }),
       )
-      // Best-effort notify server and immediately release remote audio hardware
-      httpClient('/api/output/device', {
-        method: 'POST',
-        body: JSON.stringify({ deviceId: 'local' }),
-      }).catch(() => {})
-      httpClient('/api/output/control', {
-        method: 'POST',
-        body: JSON.stringify({ action: 'stop' }),
-      }).catch(() => {})
-      notify('音频输出已切换至: 本机播放 (已释放远端设备)', 'info')
+      notify('音频输出已切换至: 本机播放', 'info')
       handleClose()
       return
     }

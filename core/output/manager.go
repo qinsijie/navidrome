@@ -298,16 +298,15 @@ func (m *Manager) SetActiveDevice(deviceID string) error {
 	oldDevID := m.activeDevID
 	m.activeDevID = deviceID
 	if m.session != nil {
-		m.session.SetDeviceID(deviceID)
-		if deviceID == string(DeviceTypeLocal) {
-			_ = m.session.Stop()
+		if deviceID != string(DeviceTypeLocal) {
+			m.session.SetDeviceID(deviceID)
 		}
 	}
 	hqCfg := m.hqConfig
 	m.mu.Unlock()
 
-	// If switching away from a remote device, release the hardware immediately
-	if oldDevID != "" && oldDevID != string(DeviceTypeLocal) && (deviceID == string(DeviceTypeLocal) || deviceID != oldDevID) {
+	// If switching between different remote hardware devices (e.g. hqplayer -> dlna), release the previous hardware
+	if oldDevID != "" && oldDevID != string(DeviceTypeLocal) && deviceID != string(DeviceTypeLocal) && deviceID != oldDevID {
 		go func(prevDev string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()

@@ -150,13 +150,51 @@ const Player = () => {
   const [occupiedBy, setOccupiedBy] = useState(null)
   const pendingTakeoverActionRef = useRef(null)
 
+  const syncChannelQueueToRedux = useCallback(
+    (channelData) => {
+      if (!channelData) return
+      const queue = channelData.queue || []
+      if (!Array.isArray(queue) || queue.length === 0) return
+
+      const serverQueueKey = queue.map((t) => t.trackId).join(',')
+      const localQueueKey = (playerStateRef.current?.queue || [])
+        .map((t) => t.trackId)
+        .join(',')
+      if (serverQueueKey && serverQueueKey !== localQueueKey) {
+        const mappedList = queue.map((t) => ({
+          trackId: t.trackId,
+          uuid: t.trackId,
+          name: t.title,
+          song: {
+            id: t.trackId,
+            title: t.title,
+            artist: t.artist,
+            album: t.album,
+            duration: t.duration,
+          },
+          singer: t.artist,
+          duration: t.duration,
+          musicSrc: subsonic.streamUrl(t.trackId),
+          cover: subsonic.getCoverArtUrl({ id: t.trackId }, 300),
+        }))
+        const targetIdx =
+          channelData.currentIndex >= 0 &&
+          channelData.currentIndex < mappedList.length
+            ? channelData.currentIndex
+            : 0
+        dispatch(syncQueue(mappedList[targetIdx], mappedList))
+      }
+    },
+    [dispatch],
+  )
+
   // Listen to server UserSession SSE events for multi-device synchronized playback
   useEffect(() => {
     const handleUserPlaybackState = (e) => {
       const serverState = e.detail
       if (!serverState) return
 
-      // Echo Suppression: Ignore updates originated from this client to protect local playback
+      // Echo Suppression: Ignore updates originated from this client
       if (
         serverState.sourceClient &&
         serverState.sourceClient === clientUniqueId
@@ -164,86 +202,64 @@ const Player = () => {
         return
       }
 
-      if (
-        serverState.outputTarget &&
-        serverState.outputTarget !== activeOutputDeviceRef.current
-      ) {
-        setActiveOutputDevice(serverState.outputTarget)
-      }
+      const eventChannel =
+        serverState.channel ||
+        serverState.activeEvent ||
+        (serverState.outputTarget && serverState.outputTarget !== 'local'
+          ? 'remote'
+          : 'local')
+      const isViewingRemote = activeOutputDeviceRef.current !== 'local'
 
-      const isRemote =
-        serverState.outputTarget && serverState.outputTarget !== 'local'
+      if (isViewingRemote) {
+        // Current client is acting as Remote Controller (e.g. for HQPlayer)
+        // ONLY accept remote channel updates; ignore local audio updates from other clients
+        if (eventChannel !== 'remote') return
 
-      // Synchronize queue if sent by server and different from local queue
-      if (
-        serverState.queue &&
-        Array.isArray(serverState.queue) &&
-        serverState.queue.length > 0
-      ) {
-        const serverQueueKey = serverState.queue
-          .map((t) => t.trackId)
-          .join(',')
-        const localQueueKey = (playerStateRef.current?.queue || [])
-          .map((t) => t.trackId)
-          .join(',')
-        if (serverQueueKey && serverQueueKey !== localQueueKey) {
-          const mappedList = serverState.queue.map((t) => ({
-            trackId: t.trackId,
-            uuid: t.trackId,
-            name: t.title,
-            song: {
-              id: t.trackId,
-              title: t.title,
-              artist: t.artist,
-              album: t.album,
-              duration: t.duration,
-            },
-            singer: t.artist,
-            duration: t.duration,
-            musicSrc: subsonic.streamUrl(t.trackId),
-            cover: subsonic.getCoverArtUrl({ id: t.trackId }, 300),
-          }))
-          const targetIdx =
-            serverState.currentIndex >= 0 &&
-            serverState.currentIndex < mappedList.length
-              ? serverState.currentIndex
-              : 0
-          dispatch(syncQueue(mappedList[targetIdx], mappedList))
-        }
-      }
+        const remoteData = serverState.remote || serverState
 
-      if (isRemote) {
-        // REMOTE HARDWARE (HQPE):
         // 1. Local HTML5 audio element must be silent/paused
         if (audioInstance && !audioInstance.paused) {
           audioInstance.pause()
         }
-        // 2. Synchronize remote progress clock
-        remoteProgressRef.current.baseSec = serverState.timeOffset || 0
-        remoteProgressRef.current.baseClientTime =
-          serverState.startedAt > 0 ? serverState.startedAt : Date.now()
-        remoteProgressRef.current.playing = serverState.state === 'playing'
-        remoteProgressRef.current.duration = serverState.duration || 0
-        remoteProgressRef.current.trackId = serverState.trackId || null
-        remoteProgressRef.current.currentIndex =
-          serverState.currentIndex ?? -1
 
-        // 3. Sync Redux current track so player UI bar updates
-        const trackId = serverState.trackId
+        // 2. Synchronize remote queue if changed
+        if (
+          remoteData.queue &&
+          Array.isArray(remoteData.queue) &&
+          remoteData.queue.length > 0
+        ) {
+          syncChannelQueueToRedux(remoteData)
+        }
+
+        // 3. Synchronize remote progress clock
+        remoteProgressRef.current.baseSec = remoteData.timeOffset || 0
+        remoteProgressRef.current.baseClientTime =
+          remoteData.startedAt > 0 ? remoteData.startedAt : Date.now()
+        remoteProgressRef.current.playing = remoteData.state === 'playing'
+        remoteProgressRef.current.duration =
+          remoteData.duration || remoteData.track?.duration || 0
+        remoteProgressRef.current.trackId =
+          remoteData.trackId || remoteData.track?.trackId || null
+        remoteProgressRef.current.currentIndex =
+          remoteData.currentIndex ?? -1
+
+        // 4. Sync Redux current track so player UI bar updates
+        const trackId = remoteProgressRef.current.trackId
         if (trackId && playerStateRef.current?.current?.trackId !== trackId) {
+          const track = remoteData.track || remoteData
           const currentObj = {
             trackId,
             uuid: trackId,
-            name: serverState.title,
-            singer: serverState.artist,
-            duration: serverState.duration,
+            name: track.title,
+            singer: track.artist,
+            duration: track.duration,
             cover: subsonic.getCoverArtUrl({ id: trackId }, 300),
             song: {
               id: trackId,
-              title: serverState.title,
-              artist: serverState.artist,
-              album: serverState.album,
-              duration: serverState.duration,
+              title: track.title,
+              artist: track.artist,
+              album: track.album,
+              duration: track.duration,
             },
           }
           dispatch(currentPlaying(currentObj))
@@ -251,9 +267,9 @@ const Player = () => {
           setCurrentTrackId(trackId)
         }
 
-        // 4. Update play/pause icon in UI
+        // 5. Update play/pause icon in UI
         if (audioInstance) {
-          if (serverState.state === 'playing') {
+          if (remoteData.state === 'playing') {
             audioInstance.dispatchEvent(new Event('play'))
           } else {
             audioInstance.dispatchEvent(new Event('pause'))
@@ -261,26 +277,41 @@ const Player = () => {
         }
         setHeartbeatTrackId(null)
       } else {
-        // LOCAL OUTPUT:
+        // Current client is playing locally (Local Channel)
+        // ONLY accept local channel updates; ignore remote HQPlayer updates so phone audio is NEVER interrupted!
+        if (eventChannel !== 'local') return
+
+        const localData = serverState.local || serverState
+
+        // 1. Synchronize local queue if changed by another local client of this user
+        if (
+          localData.queue &&
+          Array.isArray(localData.queue) &&
+          localData.queue.length > 0
+        ) {
+          syncChannelQueueToRedux(localData)
+        }
+
+        // 2. Synchronize local audio playback
         if (audioInstance) {
-          if (serverState.state === 'playing') {
+          if (localData.state === 'playing') {
             const nowMs = Date.now()
-            let targetSec = serverState.timeOffset || 0
-            if (serverState.startedAt > 0) {
-              targetSec += Math.max(0, (nowMs - serverState.startedAt) / 1000)
+            let targetSec = localData.timeOffset || 0
+            if (localData.startedAt > 0) {
+              targetSec += Math.max(0, (nowMs - localData.startedAt) / 1000)
             }
 
             const queue = playerStateRef.current?.queue || []
             if (
-              serverState.currentIndex >= 0 &&
-              serverState.currentIndex < queue.length
+              localData.currentIndex >= 0 &&
+              localData.currentIndex < queue.length
             ) {
               if (
-                playerStateRef.current?.playIndex !== serverState.currentIndex
+                playerStateRef.current?.playIndex !== localData.currentIndex
               ) {
                 if (typeof audioInstance.playByIndex === 'function') {
                   try {
-                    audioInstance.playByIndex(serverState.currentIndex)
+                    audioInstance.playByIndex(localData.currentIndex)
                   } catch (err) {}
                 }
               }
@@ -300,8 +331,8 @@ const Player = () => {
               audioInstance.play().catch(() => {})
             }
           } else if (
-            serverState.state === 'paused' ||
-            serverState.state === 'stopped'
+            localData.state === 'paused' ||
+            localData.state === 'stopped'
           ) {
             if (!audioInstance.paused) {
               audioInstance.pause()
@@ -348,7 +379,7 @@ const Player = () => {
       })
       .catch(() => {})
 
-    httpClient('/api/output/queue')
+    httpClient('/api/output/queue?channel=local')
       .then(({ json }) => {
         if (
           json &&
@@ -358,30 +389,7 @@ const Player = () => {
         ) {
           const localQueueLen = (playerStateRef.current?.queue || []).length
           if (localQueueLen === 0) {
-            const mappedList = json.queue.map((t) => ({
-              trackId: t.trackId,
-              uuid: t.trackId,
-              name: t.title,
-              song: {
-                id: t.trackId,
-                title: t.title,
-                artist: t.artist,
-                album: t.album,
-                duration: t.duration,
-              },
-              singer: t.artist,
-              duration: t.duration,
-              musicSrc: subsonic.streamUrl(t.trackId),
-              cover: subsonic.getCoverArtUrl({ id: t.trackId }, 300),
-            }))
-            const currentIdx =
-              json.currentIndex >= 0 && json.currentIndex < mappedList.length
-                ? json.currentIndex
-                : 0
-            dispatch(syncQueue(mappedList[currentIdx], mappedList))
-            if (json.outputTarget && json.outputTarget !== 'local') {
-              setActiveOutputDevice(json.outputTarget)
-            }
+            syncChannelQueueToRedux(json)
           }
         }
       })
@@ -393,12 +401,36 @@ const Player = () => {
       if (e.detail?.device?.name) {
         activeDeviceNameRef.current = e.detail.device.name
       }
+      const isNowRemote = newId !== 'local'
+      if (isNowRemote) {
+        // Pausing local audio when switching to remote controller
+        if (audioInstance && !audioInstance.paused) {
+          audioInstance.pause()
+        }
+        // Fetch remote channel queue and mirror
+        httpClient('/api/output/queue?channel=remote')
+          .then(({ json }) => {
+            if (json) {
+              syncChannelQueueToRedux(json)
+            }
+          })
+          .catch(() => {})
+      } else {
+        // Fetch local channel queue
+        httpClient('/api/output/queue?channel=local')
+          .then(({ json }) => {
+            if (json) {
+              syncChannelQueueToRedux(json)
+            }
+          })
+          .catch(() => {})
+      }
     }
     window.addEventListener('nd:output-device-changed', handleDeviceChanged)
     return () => {
       window.removeEventListener('nd:output-device-changed', handleDeviceChanged)
     }
-  }, [dispatch])
+  }, [dispatch, syncChannelQueueToRedux, audioInstance])
 
   const ensureStatusPill = useCallback((timeEl, isRemote, deviceName, stateText) => {
     if (!timeEl || !timeEl.parentElement) return
@@ -501,6 +533,8 @@ const Player = () => {
     }))
 
     const isRemote = activeOutputDeviceRef.current !== 'local'
+    const targetChannel = isRemote ? 'remote' : 'local'
+    const targetDevice = isRemote ? activeOutputDeviceRef.current : 'local'
     const isPlaying =
       audioInstance && !audioInstance.paused && !audioInstance.ended
     const shouldAutoPlay = Boolean(
@@ -511,6 +545,8 @@ const Player = () => {
       httpClient('/api/output/queue', {
         method: 'POST',
         body: JSON.stringify({
+          channel: targetChannel,
+          deviceId: targetDevice,
           tracks: payloadTracks,
           startIndex: currentIdx,
           timeOffset:
@@ -865,6 +901,8 @@ const Player = () => {
         httpClient('/api/output/control', {
           method: 'POST',
           body: JSON.stringify({
+            channel: 'remote',
+            deviceId: activeOutputDeviceRef.current,
             action: 'volume',
             volume: Math.round(volume * 100),
           }),
@@ -895,7 +933,12 @@ const Player = () => {
 
             httpClient('/api/output/control', {
               method: 'POST',
-              body: JSON.stringify({ action: 'jump', index: playIndex }),
+              body: JSON.stringify({
+                channel: 'remote',
+                deviceId: activeOutputDeviceRef.current,
+                action: 'jump',
+                index: playIndex,
+              }),
             }).catch(() => {})
           }
         }
@@ -935,7 +978,13 @@ const Player = () => {
           const sendJump = (forceTakeover = false) => {
             httpClient('/api/output/control', {
               method: 'POST',
-              body: JSON.stringify({ action: 'jump', index: targetIndex, forceTakeover }),
+              body: JSON.stringify({
+                channel: 'remote',
+                deviceId: activeOutputDeviceRef.current,
+                action: 'jump',
+                index: targetIndex,
+                forceTakeover,
+              }),
             }).catch((err) => {
               if (err.status === 409 || err.body?.code === 'HQPLAYER_OCCUPIED') {
                 setOccupiedBy(err.body?.occupiedBy || { userName: '其他用户', trackTitle: '外部音频流' })
@@ -952,7 +1001,12 @@ const Player = () => {
             const sendPlay = (forceTakeover = false) => {
               httpClient('/api/output/control', {
                 method: 'POST',
-                body: JSON.stringify({ action: 'play', forceTakeover }),
+                body: JSON.stringify({
+                  channel: 'remote',
+                  deviceId: activeOutputDeviceRef.current,
+                  action: 'play',
+                  forceTakeover,
+                }),
               }).catch((err) => {
                 if (err.status === 409 || err.body?.code === 'HQPLAYER_OCCUPIED') {
                   setOccupiedBy(err.body?.occupiedBy || { userName: '其他用户', trackTitle: '外部音频流' })
@@ -1039,7 +1093,11 @@ const Player = () => {
         if (!document.hidden && !isHiddenRef.current) {
           httpClient('/api/output/control', {
             method: 'POST',
-            body: JSON.stringify({ action: 'stop' }),
+            body: JSON.stringify({
+              channel: 'remote',
+              deviceId: activeOutputDeviceRef.current,
+              action: 'stop',
+            }),
           }).catch(() => {})
         }
       }
@@ -1396,6 +1454,8 @@ const Player = () => {
         httpClient('/api/output/control', {
           method: 'POST',
           body: JSON.stringify({
+            channel: 'remote',
+            deviceId: activeOutputDeviceRef.current,
             action: 'seek',
             timeOffset: seekTarget >= 1.0 ? seekTarget : 0,
           }),
@@ -1426,7 +1486,12 @@ const Player = () => {
           if (activeOutputDeviceRef.current !== 'local') {
             httpClient('/api/output/control', {
               method: 'POST',
-              body: JSON.stringify({ action: 'playMode', mode }),
+              body: JSON.stringify({
+                channel: 'remote',
+                deviceId: activeOutputDeviceRef.current,
+                action: 'playMode',
+                mode,
+              }),
             }).catch(() => {})
           }
         }}
