@@ -45,6 +45,11 @@ const useStyles = makeStyles((theme) => ({
     maxWidth: 170,
     whiteSpace: 'nowrap',
     transition: 'all 0.2s ease',
+    '@media (max-width: 768px)': {
+      padding: '4px 6px !important',
+      gap: '0 !important',
+      borderRadius: '8px !important',
+    },
     '&:hover': {
       backgroundColor: (props) =>
         props.isDark
@@ -68,6 +73,9 @@ const useStyles = makeStyles((theme) => ({
     fontSize: '0.8rem',
     fontWeight: 600,
     color: (props) => (props.isDark ? '#ffffff !important' : '#1e293b !important'),
+    '@media (max-width: 768px)': {
+      display: 'none !important',
+    },
   },
   menuHeader: {
     padding: '8px 16px',

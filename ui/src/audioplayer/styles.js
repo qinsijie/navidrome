@@ -174,7 +174,10 @@ const useStyle = makeStyles(
             flexShrink: '0 !important',
           },
         '& .music-player-panel .panel-content .progress-bar-content': {
-          padding: '0 4px !important',
+          display: 'flex !important',
+          flexDirection: 'column !important',
+          justifyContent: 'center !important',
+          padding: '0 6px !important',
           margin: '0 !important',
           maxWidth: 'none !important',
           flex: '1 1 auto !important',

@@ -29,12 +29,16 @@ import { QualityBadge, SourceBadge } from './QualityBadge'
 
 const useStyles = makeStyles((theme) => ({
   root: {
-    padding: theme.spacing(2, 3),
+    padding: theme.spacing(2, 2.5),
     width: '100%',
-    maxWidth: '100%',
+    maxWidth: '100vw',
+    overflowX: 'hidden',
     margin: 0,
     boxSizing: 'border-box',
     paddingBottom: 110,
+    '@media (max-width: 768px)': {
+      padding: '12px 10px 110px 10px !important',
+    },
   },
   card: {
     height: '100%',
@@ -91,6 +95,8 @@ const useStyles = makeStyles((theme) => ({
   // Full-page detail view styles
   detailPage: {
     width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
   },
   backBtn: {
     marginBottom: theme.spacing(2),
@@ -99,38 +105,111 @@ const useStyles = makeStyles((theme) => ({
   detailHero: {
     display: 'flex',
     alignItems: 'center',
-    gap: theme.spacing(3),
-    padding: theme.spacing(3),
+    gap: theme.spacing(2.5),
+    padding: theme.spacing(2.5),
     borderRadius: 12,
-    marginBottom: theme.spacing(3),
+    marginBottom: theme.spacing(2.5),
     backgroundColor: theme.palette.background.paper,
     border: `1px solid ${theme.palette.divider}`,
-    [theme.breakpoints.down('xs')]: {
-      flexDirection: 'column',
-      textAlign: 'center',
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    overflow: 'hidden',
+    '@media (max-width: 768px)': {
+      flexDirection: 'column !important',
+      textAlign: 'center !important',
+      padding: '16px 12px !important',
+      gap: '12px !important',
     },
   },
   detailHeroInfo: {
     flex: 1,
+    minWidth: 0,
+    width: '100%',
+    boxSizing: 'border-box',
+    overflow: 'hidden',
   },
   heroActionsBar: {
     display: 'flex',
     gap: theme.spacing(1.5),
     marginTop: theme.spacing(2),
-    [theme.breakpoints.down('xs')]: {
+    '@media (max-width: 768px)': {
       justifyContent: 'center',
     },
   },
   trackItem: {
-    padding: '12px 16px',
-    paddingRight: '88px !important',
-    position: 'relative',
+    display: 'flex',
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: '100%',
+    boxSizing: 'border-box',
+    padding: '10px 8px',
     borderRadius: 6,
     borderBottom: `1px solid ${theme.palette.divider}`,
     transition: 'background-color 0.15s ease',
+    overflow: 'hidden',
+    cursor: 'pointer',
     '&:hover': {
       backgroundColor: theme.palette.action.hover,
     },
+  },
+  trackIndex: {
+    width: 28,
+    minWidth: 28,
+    textAlign: 'center',
+    color: theme.palette.text.secondary,
+    fontSize: '0.85rem',
+    marginRight: 6,
+    flexShrink: 0,
+  },
+  trackContent: {
+    flex: '1 1 auto',
+    minWidth: 0,
+    overflow: 'hidden',
+    marginRight: 8,
+  },
+  trackTitle: {
+    fontWeight: 600,
+    fontSize: '0.9rem',
+    color: theme.palette.text.primary,
+    lineHeight: 1.35,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    display: '-webkit-box',
+    '-webkit-line-clamp': 2,
+    '-webkit-box-orient': 'vertical',
+    wordBreak: 'break-all',
+  },
+  trackMeta: {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 4,
+    fontSize: '0.78rem',
+    color: theme.palette.text.secondary,
+  },
+  trackArtist: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    color: '#9CA3AF',
+    maxWidth: '100%',
+  },
+  trackActions: {
+    width: 76,
+    minWidth: 76,
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+  },
+  trackDuration: {
+    fontSize: '0.75rem',
+    color: theme.palette.text.secondary,
+    minWidth: 38,
+    textAlign: 'right',
   },
 }))
 
@@ -296,76 +375,40 @@ export const OnlineLeaderboards = () => {
                 </div>
               </Paper>
 
-              <List disablePadding>
+              <div style={{ width: '100%' }}>
                 {detailData.list && detailData.list.length > 0 ? (
                   detailData.list.map((track, idx) => (
-                    <ListItem
+                    <div
                       key={track.id || idx}
-                      button
                       className={classes.trackItem}
                       onClick={(e) => handlePlayTrack(track, e)}
                     >
-                      <Typography
-                        variant="body2"
-                        color="textSecondary"
-                        style={{ width: 40, textAlign: 'center', marginRight: 12 }}
-                      >
+                      <div className={classes.trackIndex}>
                         {idx + 1}
-                      </Typography>
-                      <ListItemText
-                        style={{ paddingRight: 72, minWidth: 0, overflow: 'hidden' }}
-                        primary={
-                          <Typography
-                            variant="subtitle2"
-                            style={{
-                              fontWeight: 600,
-                              whiteSpace: 'nowrap',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                            }}
-                          >
-                            {track.title}
-                          </Typography>
-                        }
-                        secondary={
-                          <Box
-                            display="flex"
-                            alignItems="center"
-                            mt={0.5}
-                            style={{
-                              whiteSpace: 'nowrap',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                            }}
-                          >
-                            <QualityBadge quality={track.quality || 'flac'} />
-                            <SourceBadge source={track.source} />
-                            <span
-                              style={{
-                                fontSize: '0.8rem',
-                                color: '#9CA3AF',
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                              }}
-                            >
-                              {track.artist} {track.album ? `- ${track.album}` : ''}
-                            </span>
-                          </Box>
-                        }
-                      />
-                      <ListItemSecondaryAction style={{ display: 'flex', alignItems: 'center' }}>
-                        <Typography
-                          variant="caption"
-                          color="textSecondary"
-                          style={{ marginRight: 16 }}
-                        >
+                      </div>
+
+                      <div className={classes.trackContent}>
+                        <div className={classes.trackTitle}>
+                          {track.title}
+                        </div>
+                        <div className={classes.trackMeta}>
+                          <QualityBadge quality={track.quality || 'flac'} />
+                          <SourceBadge source={track.source} />
+                          <span className={classes.trackArtist}>
+                            {track.artist || '未知歌手'} {track.album ? `- ${track.album}` : ''}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className={classes.trackActions}>
+                        <span className={classes.trackDuration}>
                           {formatDuration(track.duration)}
-                        </Typography>
+                        </span>
                         <IconButton
                           size="small"
                           onClick={(e) => handleAddToPlaylist(track, e)}
                           title="添加到歌单"
+                          style={{ padding: 4 }}
                         >
                           {actingId === track.id ? (
                             <CircularProgress size={16} />
@@ -373,15 +416,15 @@ export const OnlineLeaderboards = () => {
                             <PlaylistAddIcon fontSize="small" />
                           )}
                         </IconButton>
-                      </ListItemSecondaryAction>
-                    </ListItem>
+                      </div>
+                    </div>
                   ))
                 ) : (
                   <Box p={4} textAlign="center">
                     <Typography color="textSecondary">暂无榜单数据</Typography>
                   </Box>
                 )}
-              </List>
+              </div>
             </div>
           ) : (
             <Box p={4} textAlign="center">

@@ -49,6 +49,9 @@ const Player = () => {
   const lastPositionMsRef = useRef(0)
   const currentTrackIdRef = useRef(null)
   const stoppedRef = useRef(false)
+  const isUserPausedRef = useRef(false)
+  const silentAudioRef = useRef(null)
+  const workerRef = useRef(null)
   const [audioInstance, setAudioInstance] = useState(null)
   const isDesktop = useMediaQuery('(min-width:810px)')
   const isMobilePlayer =
@@ -77,6 +80,66 @@ const Player = () => {
     },
     heartbeatTrackId ? config.playbackReportIntervalMs : null,
   )
+
+  // Silent Audio Loop & Worker Heartbeat for WebView background persistence
+  useEffect(() => {
+    const silentWav =
+      'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA=='
+    let silentAudio = document.getElementById('nd-keepalive-audio')
+    if (!silentAudio) {
+      silentAudio = document.createElement('audio')
+      silentAudio.id = 'nd-keepalive-audio'
+      silentAudio.loop = true
+      silentAudio.src = silentWav
+      silentAudio.volume = 0.01
+      silentAudio.style.display = 'none'
+      document.body.appendChild(silentAudio)
+    }
+    silentAudioRef.current = silentAudio
+
+    let worker = null
+    try {
+      const blob = new Blob(
+        [
+          `let t=null;self.onmessage=function(e){if(e.data==='start'){if(!t){t=setInterval(function(){self.postMessage('tick');},1000);}}else if(e.data==='stop'){if(t){clearInterval(t);t=null;}}};`,
+        ],
+        { type: 'application/javascript' },
+      )
+      worker = new Worker(URL.createObjectURL(blob))
+      worker.onmessage = (e) => {
+        if (e.data === 'tick') {
+          if (
+            audioInstance &&
+            !isUserPausedRef.current &&
+            audioInstance.paused &&
+            !audioInstance.ended &&
+            currentTrackIdRef.current
+          ) {
+            audioInstance.play().catch(() => {})
+          }
+        }
+      }
+      workerRef.current = worker
+    } catch (e) {}
+
+    const handlePopState = () => {
+      const panel = document.querySelector('.audio-lists-panel')
+      const closeBtn = document.querySelector(
+        '.audio-lists-panel-header-close-btn',
+      )
+      if (panel && !panel.classList.contains('hide') && closeBtn) {
+        closeBtn.click()
+      }
+    }
+    window.addEventListener('popstate', handlePopState)
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState)
+      if (worker) {
+        worker.terminate()
+      }
+    }
+  }, [audioInstance])
 
   // Detect browser codec profile and eagerly resolve transcode URLs for the
   // persisted queue once on mount (e.g. after a browser refresh)
@@ -537,6 +600,13 @@ const Player = () => {
     [gainInfo, isDesktop, playerTheme, translate, playerState.mode],
   )
 
+  const formatDurationSec = (sec) => {
+    if (!sec || isNaN(sec)) return ''
+    const m = Math.floor(sec / 60)
+    const s = Math.floor(sec % 60)
+    return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`
+  }
+
   const options = useMemo(() => {
     const current = playerState.current || {}
     const hasQueue = playerState.queue.length > 0
@@ -548,7 +618,16 @@ const Player = () => {
         : 0
     return {
       ...defaultOptions,
-      audioLists: hasQueue ? playerState.queue.map((item) => item) : placeholderTracks,
+      audioLists: hasQueue
+        ? playerState.queue.map((item) => {
+            const dur = formatDurationSec(item.duration || item.song?.duration)
+            const singerName = item.singer || item.song?.artist || '未知歌手'
+            return {
+              ...item,
+              singer: dur ? `${singerName} · ${dur}` : singerName,
+            }
+          })
+        : placeholderTracks,
       playIndex: hasQueue ? activePlayIndex : 0,
       autoPlay:
         hasQueue &&
@@ -883,24 +962,56 @@ const Player = () => {
     }
 
     const handlePlay = () => {
+      isUserPausedRef.current = false
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'playing'
       }
       acquireWakeLock()
+      if (silentAudioRef.current) {
+        silentAudioRef.current.play().catch(() => {})
+      }
+      if (workerRef.current) {
+        workerRef.current.postMessage('start')
+      }
     }
 
     const handlePause = () => {
+      isUserPausedRef.current = true
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'paused'
       }
       releaseWakeLock()
+      if (silentAudioRef.current) {
+        silentAudioRef.current.pause()
+      }
+      if (workerRef.current) {
+        workerRef.current.postMessage('stop')
+      }
     }
 
     const handleEnded = () => {
+      isUserPausedRef.current = false
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'none'
       }
       releaseWakeLock()
+      if (silentAudioRef.current) {
+        silentAudioRef.current.pause()
+      }
+      if (workerRef.current) {
+        workerRef.current.postMessage('stop')
+      }
+    }
+
+    const handleStalled = () => {
+      if (
+        audioInstance &&
+        !isUserPausedRef.current &&
+        !audioInstance.ended &&
+        currentTrackIdRef.current
+      ) {
+        audioInstance.play().catch(() => {})
+      }
     }
 
     const handleTimeUpdate = () => {
@@ -1042,6 +1153,9 @@ const Player = () => {
     audioInstance.addEventListener('durationchange', updatePositionState)
     audioInstance.addEventListener('loadedmetadata', handleRestorePosition)
     audioInstance.addEventListener('canplay', handleRestorePosition)
+    audioInstance.addEventListener('stalled', handleStalled)
+    audioInstance.addEventListener('waiting', handleStalled)
+    audioInstance.addEventListener('suspend', handleStalled)
     document.addEventListener('visibilitychange', handleVisibilityOrResume)
     window.addEventListener('online', handleVisibilityOrResume)
 
@@ -1053,6 +1167,9 @@ const Player = () => {
       audioInstance.removeEventListener('durationchange', updatePositionState)
       audioInstance.removeEventListener('loadedmetadata', handleRestorePosition)
       audioInstance.removeEventListener('canplay', handleRestorePosition)
+      audioInstance.removeEventListener('stalled', handleStalled)
+      audioInstance.removeEventListener('waiting', handleStalled)
+      audioInstance.removeEventListener('suspend', handleStalled)
       document.removeEventListener('visibilitychange', handleVisibilityOrResume)
       window.removeEventListener('online', handleVisibilityOrResume)
     }
@@ -1125,6 +1242,19 @@ const Player = () => {
         onCoverClick={onCoverClick}
         onAudioError={onAudioError}
         onBeforeDestroy={onBeforeDestroy}
+        onAudioListsPanelChange={(panelVisible) => {
+          if (panelVisible) {
+            try {
+              window.history.pushState({ nd_modal: 'queue' }, '')
+            } catch (e) {}
+          } else {
+            if (window.history.state?.nd_modal === 'queue') {
+              try {
+                window.history.back()
+              } catch (e) {}
+            }
+          }
+        }}
         getAudioInstance={setAudioInstance}
       />
       <GlobalHotKeys handlers={handlers} keyMap={keyMap} allowChanges />
