@@ -81,14 +81,19 @@ const useStyles = makeStyles((theme) => ({
   sourceSelectBtn: {
     textTransform: 'none',
     fontWeight: 600,
-    minWidth: 84,
-    maxWidth: 110,
+    minWidth: 104,
+    whiteSpace: 'nowrap',
     fontSize: '0.85rem',
     height: 44,
     padding: '0 8px',
     border: `1px solid ${theme.palette.divider}`,
     borderRadius: 8,
     flexShrink: 0,
+    '& .MuiButton-label': {
+      whiteSpace: 'nowrap',
+      display: 'inline-flex',
+      alignItems: 'center',
+    },
   },
   searchBoxContainer: {
     position: 'relative',

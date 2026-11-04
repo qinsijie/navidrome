@@ -13,6 +13,7 @@ import (
 	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/core/musicengine"
 	"github.com/navidrome/navidrome/core/output"
+	"github.com/navidrome/navidrome/core/scrobbler"
 	"github.com/navidrome/navidrome/core/stream"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model/request"
@@ -213,6 +214,7 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			PlayMode:     state.PlayMode,
 			CurrentIndex: state.CurrentIndex,
 			SourceClient: state.SourceClient,
+			Queue:        state.Queue,
 		}
 		events.GetBroker().SendMessage(senderCtx, evt)
 	})
@@ -357,6 +359,13 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
+	r.Get("/output/queue", func(w http.ResponseWriter, r *http.Request) {
+		user, _ := request.UserFrom(r.Context())
+		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(sess.Snapshot())
+	})
+
 	r.Post("/output/queue", func(w http.ResponseWriter, r *http.Request) {
 		var req setQueueRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -417,20 +426,27 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 
 		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
 		clientUID, _ := request.ClientUniqueIdFrom(r.Context())
-		track := output.TrackMetadata{}
-		if len(req.Tracks) > req.StartIndex && req.StartIndex >= 0 {
-			track = req.Tracks[req.StartIndex]
+		userSnap := sess.SetQueue(r.Context(), req.Tracks, req.StartIndex, req.TimeOffset, req.PlayMode, req.AutoPlay, mgr.GetActiveDevice(), clientUID)
+
+		// When output device is HQPlayer, report playback on behalf of the user to scrobbler
+		if req.AutoPlay && mgr.GetActiveDevice() == "hqplayer" && userSnap.Track.TrackID != "" {
+			if tracker := scrobbler.GetActivePlayTracker(); tracker != nil {
+				_ = tracker.ReportPlayback(r.Context(), scrobbler.ReportPlaybackParams{
+					MediaId:      userSnap.Track.TrackID,
+					PositionMs:   int64(req.TimeOffset * 1000),
+					State:        scrobbler.StatePlaying,
+					PlaybackRate: 1.0,
+					ClientId:     "user:" + user.ID,
+					ClientName:   "HQPlayer (" + user.UserName + ")",
+				})
+			}
 		}
-		playbackState := "stopped"
-		if req.AutoPlay {
-			playbackState = "playing"
-		}
-		sess.UpdatePlayback(r.Context(), playbackState, track, req.StartIndex, req.TimeOffset, req.PlayMode, mgr.GetActiveDevice(), clientUID)
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":     "ok",
-			"nowPlaying": mgr.GetNowPlaying(),
+			"status":      "ok",
+			"userSession": userSnap,
+			"nowPlaying":  mgr.GetNowPlaying(),
 		})
 	})
 
@@ -532,11 +548,65 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 
 		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
 		clientUID, _ := request.ClientUniqueIdFrom(r.Context())
-		sess.UpdatePlayback(r.Context(), req.Action, sess.Snapshot().Track, req.Index, req.TimeOffset, req.Mode, "", clientUID)
+
+		stateStr := "playing"
+		targetIndex := req.Index
+		snap := sess.Snapshot()
+		currentTrack := snap.Track
+
+		switch req.Action {
+		case "pause":
+			stateStr = "paused"
+		case "stop":
+			stateStr = "stopped"
+		case "play":
+			stateStr = "playing"
+		case "seek":
+			stateStr = snap.State
+		case "clear":
+			clearSnap := sess.ClearQueue(r.Context(), clientUID)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "userSession": clearSnap, "nowPlaying": mgr.GetNowPlaying()})
+			return
+		case "next":
+			stateStr = "playing"
+			if snap.CurrentIndex+1 < len(snap.Queue) {
+				targetIndex = snap.CurrentIndex + 1
+				currentTrack = snap.Queue[targetIndex]
+			}
+		case "prev":
+			stateStr = "playing"
+			if snap.CurrentIndex-1 >= 0 {
+				targetIndex = snap.CurrentIndex - 1
+				currentTrack = snap.Queue[targetIndex]
+			}
+		case "jump":
+			stateStr = "playing"
+			if req.Index >= 0 && req.Index < len(snap.Queue) {
+				targetIndex = req.Index
+				currentTrack = snap.Queue[targetIndex]
+			}
+		}
+
+		userSnap := sess.UpdatePlayback(r.Context(), stateStr, currentTrack, targetIndex, req.TimeOffset, req.Mode, "", clientUID)
+
+		if mgr.GetActiveDevice() == "hqplayer" {
+			if tracker := scrobbler.GetActivePlayTracker(); tracker != nil && currentTrack.TrackID != "" {
+				_ = tracker.ReportPlayback(r.Context(), scrobbler.ReportPlaybackParams{
+					MediaId:      currentTrack.TrackID,
+					PositionMs:   int64(req.TimeOffset * 1000),
+					State:        stateStr,
+					PlaybackRate: 1.0,
+					ClientId:     "user:" + user.ID,
+					ClientName:   "HQPlayer (" + user.UserName + ")",
+				})
+			}
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "nowPlaying": mgr.GetNowPlaying()})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "userSession": userSnap, "nowPlaying": mgr.GetNowPlaying()})
 	})
 
 	r.Post("/output/pause", func(w http.ResponseWriter, r *http.Request) {

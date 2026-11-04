@@ -85,6 +85,7 @@ type UserPlaybackState struct {
 	PlayMode     string  `json:"playMode"`
 	CurrentIndex int     `json:"currentIndex"`
 	SourceClient string  `json:"sourceClient,omitempty"`
+	Queue        any     `json:"queue,omitempty"`
 }
 
 func (rr *RefreshResource) With(resource string, ids ...string) *RefreshResource {

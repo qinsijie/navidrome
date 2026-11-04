@@ -125,6 +125,12 @@ func NewPlayTracker(ds model.DataStore, broker events.Broker, pluginManager Plug
 	return newPlayTracker(ds, broker, pluginManager)
 }
 
+var activePlayTrackerInstance PlayTracker
+
+func GetActivePlayTracker() PlayTracker {
+	return activePlayTrackerInstance
+}
+
 func newPlayTracker(ds model.DataStore, broker events.Broker, pluginManager PluginLoader) *playTracker {
 	m := cache.NewSimpleCache[string, PlaybackSession]()
 	p := &playTracker{
@@ -142,6 +148,7 @@ func newPlayTracker(ds model.DataStore, broker events.Broker, pluginManager Plug
 		prWorkerDone:      make(chan struct{}),
 	}
 	enableNowPlaying := conf.Server.EnableNowPlaying
+	activePlayTrackerInstance = p
 	m.OnExpiration(func(_ string, info PlaybackSession) {
 		log.Debug("PlaybackSession expired", "clientId", info.PlayerId, "mediaId", info.MediaFile.ID, "state",
 			info.State, "username", info.Username, "userId", info.UserId)
@@ -279,6 +286,12 @@ func (p *playTracker) ReportPlayback(ctx context.Context, params ReportPlaybackP
 	clientId := params.ClientId
 	client := params.ClientName
 
+	// Unify playback session tracking key per user: one user has exactly ONE playback session
+	sessionKey := clientId
+	if user != nil && user.ID != "" {
+		sessionKey = "user:" + user.ID
+	}
+
 	now := time.Now()
 
 	// One verdict per report, reused by every dispatch below, so a filter reading
@@ -289,8 +302,8 @@ func (p *playTracker) ReportPlayback(ctx context.Context, params ReportPlaybackP
 	case StateStarting:
 		// Clients may send starting/playing unordered; a late "starting" must not downgrade
 		// a playing session, or position estimation freezes until the next report.
-		if p.hasPlayingSession(clientId, params.MediaId) {
-			log.Trace(ctx, "Ignoring out-of-order starting report for playing session", "clientId", clientId, "mediaId", params.MediaId)
+		if p.hasPlayingSession(sessionKey, params.MediaId) {
+			log.Trace(ctx, "Ignoring out-of-order starting report for playing session", "sessionKey", sessionKey, "mediaId", params.MediaId)
 			return nil
 		}
 		mf, err := p.ds.MediaFile().GetWithParticipants(ctx, params.MediaId)
@@ -313,20 +326,20 @@ func (p *playTracker) ReportPlayback(ctx context.Context, params ReportPlaybackP
 		}
 		p.sessionsMu.Lock()
 		// re-check: a concurrent "playing" report may have created the session during the load above
-		if p.hasPlayingSession(clientId, params.MediaId) {
+		if p.hasPlayingSession(sessionKey, params.MediaId) {
 			p.sessionsMu.Unlock()
-			log.Trace(ctx, "Ignoring out-of-order starting report for playing session", "clientId", clientId, "mediaId", params.MediaId)
+			log.Trace(ctx, "Ignoring out-of-order starting report for playing session", "sessionKey", sessionKey, "mediaId", params.MediaId)
 			return nil
 		}
-		err = p.playMap.AddWithTTL(clientId, info, remainingTTL(mf.Duration, params.PositionMs, params.PlaybackRate))
+		err = p.playMap.AddWithTTL(sessionKey, info, remainingTTL(mf.Duration, params.PositionMs, params.PlaybackRate))
 		p.sessionsMu.Unlock()
 		if err != nil {
-			log.Warn(ctx, "Error adding PlaybackSession to cache", "clientId", clientId, "mediaId", params.MediaId, "state", params.State, err)
+			log.Warn(ctx, "Error adding PlaybackSession to cache", "sessionKey", sessionKey, "mediaId", params.MediaId, "state", params.State, err)
 		}
 		p.enqueuePlaybackReport(ctx, info, filtered)
 
 	case StatePlaying, StatePaused:
-		info, getErr := p.playMap.Get(clientId)
+		info, getErr := p.playMap.Get(sessionKey)
 		if getErr != nil || info.MediaFile.ID != params.MediaId {
 			mf, err := p.ds.MediaFile().GetWithParticipants(ctx, params.MediaId)
 			if err != nil {
@@ -351,12 +364,12 @@ func (p *playTracker) ReportPlayback(ctx context.Context, params ReportPlaybackP
 		if params.State == StatePlaying {
 			ttl = remainingTTL(info.MediaFile.Duration, params.PositionMs, params.PlaybackRate)
 		}
-		log.Trace(ctx, "Updating PlaybackSession in cache", "clientId", clientId, "mediaId", params.MediaId, "state", params.State, "positionMs", params.PositionMs, "playbackRate", params.PlaybackRate, "ttl", ttl)
+		log.Trace(ctx, "Updating PlaybackSession in cache", "sessionKey", sessionKey, "mediaId", params.MediaId, "state", params.State, "positionMs", params.PositionMs, "playbackRate", params.PlaybackRate, "ttl", ttl)
 		p.sessionsMu.Lock()
-		err := p.playMap.AddWithTTL(clientId, info, ttl)
+		err := p.playMap.AddWithTTL(sessionKey, info, ttl)
 		p.sessionsMu.Unlock()
 		if err != nil {
-			log.Warn(ctx, "Error updating PlaybackSession in cache", "clientId", clientId, "mediaId", params.MediaId, "state", params.State, err)
+			log.Warn(ctx, "Error updating PlaybackSession in cache", "sessionKey", sessionKey, "mediaId", params.MediaId, "state", params.State, err)
 		}
 		p.enqueuePlaybackReport(ctx, info, filtered)
 
@@ -382,15 +395,15 @@ func (p *playTracker) ReportPlayback(ctx context.Context, params ReportPlaybackP
 			}
 		}
 		p.sessionsMu.Lock()
-		info, getErr := p.playMap.Get(clientId)
+		info, getErr := p.playMap.Get(sessionKey)
 		// A late stop for a previous track must not end the current session nor reach
 		// playback reporters, or presence-style plugins would clear the active track.
 		if getErr == nil && info.MediaFile.ID != params.MediaId {
 			p.sessionsMu.Unlock()
-			log.Trace(ctx, "Ignoring out-of-order stopped report for different track", "clientId", clientId, "stoppedMediaId", params.MediaId, "currentMediaId", info.MediaFile.ID)
+			log.Trace(ctx, "Ignoring out-of-order stopped report for different track", "sessionKey", sessionKey, "stoppedMediaId", params.MediaId, "currentMediaId", info.MediaFile.ID)
 			return nil
 		}
-		p.playMap.Remove(clientId)
+		p.playMap.Remove(sessionKey)
 		p.sessionsMu.Unlock()
 		stoppedInfo := PlaybackSession{
 			UserId:       user.ID,
@@ -453,6 +466,25 @@ func (p *playTracker) GetNowPlaying(ctx context.Context) ([]PlaybackSession, err
 			return user.HasLibraryAccess(s.MediaFile.LibraryID)
 		})
 	}
+	// Deduplicate strictly by UserId so each user has at most ONE active playback entry
+	userLatest := make(map[string]PlaybackSession)
+	var anonSessions []PlaybackSession
+	for _, s := range res {
+		if s.UserId != "" {
+			existing, ok := userLatest[s.UserId]
+			if !ok || s.LastReport.After(existing.LastReport) {
+				userLatest[s.UserId] = s
+			}
+		} else {
+			anonSessions = append(anonSessions, s)
+		}
+	}
+	res = make([]PlaybackSession, 0, len(userLatest)+len(anonSessions))
+	for _, s := range userLatest {
+		res = append(res, s)
+	}
+	res = append(res, anonSessions...)
+
 	slices.SortFunc(res, func(a, b PlaybackSession) int {
 		return b.Start.Compare(a.Start)
 	})
