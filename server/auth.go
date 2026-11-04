@@ -80,14 +80,17 @@ func fnosLogin(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 
-		// 2. Fall back to primary admin or first existing user
+		// 2. Fall back to primary admin or first existing user with decrypted password
 		if user == nil {
-			user, _ = userRepo.FindFirstAdmin(ctx)
+			admin, errAdmin := userRepo.FindFirstAdmin(ctx)
+			if errAdmin == nil && admin != nil {
+				user, _ = userRepo.FindByUsernameWithPassword(ctx, admin.UserName)
+			}
 		}
 		if user == nil {
 			users, errUsers := userRepo.GetAll(ctx)
 			if errUsers == nil && len(users) > 0 {
-				user = &users[0]
+				user, _ = userRepo.FindByUsernameWithPassword(ctx, users[0].UserName)
 			}
 		}
 
@@ -154,6 +157,7 @@ func fnosResetPassword(ds model.DataStore) func(w http.ResponseWriter, r *http.R
 			_ = rest.RespondWithError(w, http.StatusInternalServerError, "重置密码失败: "+err.Error())
 			return
 		}
+		user.Password = req.NewPassword
 
 		tokenString, err := auth.CreateToken(user)
 		if err != nil {

@@ -81,8 +81,10 @@ func (r *StreamRelay) StartPull(parentCtx context.Context, startOffset int64) er
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	}
 
-	// 2. Add Range header (prompts upstream CDN to provide Content-Range with total length)
-	req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startOffset))
+	// 2. Add Range header if seeking beyond start (prompts upstream CDN to provide Content-Range)
+	if startOffset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startOffset))
+	}
 
 	resp, err := r.client.Do(req)
 	if err != nil {
@@ -203,9 +205,21 @@ func (r *StreamRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		reqEnd = effectiveTotal - 1
 	}
 
+	contentType := sniff.ContentType
+	if contentType == "" {
+		if strings.Contains(strings.ToLower(r.stream.URL), ".flac") {
+			contentType = "audio/flac"
+		} else {
+			contentType = "audio/mpeg"
+		}
+	}
+
 	w.Header().Set("Accept-Ranges", "bytes")
-	w.Header().Set("Content-Type", sniff.ContentType)
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "*")
 
 	var status int
 	var streamLen int64

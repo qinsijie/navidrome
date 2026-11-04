@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import ReactDOM from 'react-dom'
 import { useInterval } from '../common'
 import { useDispatch, useSelector } from 'react-redux'
 import { useMediaQuery } from '@material-ui/core'
@@ -232,50 +233,12 @@ const Player = () => {
     if (audioInstance) {
       if (activeOutputDevice !== 'local') {
         audioInstance.muted = true
-
-        // Intercept native play/pause so ReactJkMusicPlayer operates virtually without firing hardware DOM audio
-        if (!audioInstance._origPlay) {
-          audioInstance._origPlay = audioInstance.play.bind(audioInstance)
-          audioInstance._origPause = audioInstance.pause.bind(audioInstance)
-        }
-
-        audioInstance.play = () => {
-          audioInstance.dispatchEvent(new Event('play'))
-          return Promise.resolve()
-        }
-
-        audioInstance.pause = () => {
-          audioInstance.dispatchEvent(new Event('pause'))
-        }
-
-        try {
-          Object.defineProperty(audioInstance, 'currentTime', {
-            get: () => virtualSecRef.current,
-            set: (val) => {
-              virtualSecRef.current = val
-              remoteProgressRef.current.baseSec = val
-              remoteProgressRef.current.baseClientTime = Date.now()
-            },
-            configurable: true,
-          })
-        } catch (e) {
-          // ignore
-        }
-
-        try {
-          audioInstance._origPause()
-        } catch (e) {
-          // ignore
-        }
       } else {
         if (audioInstance._origPlay) {
           audioInstance.play = audioInstance._origPlay
           audioInstance.pause = audioInstance._origPause
-        }
-        try {
-          delete audioInstance.currentTime
-        } catch (e) {
-          // ignore
+          delete audioInstance._origPlay
+          delete audioInstance._origPause
         }
         audioInstance.muted = false
       }
@@ -964,7 +927,7 @@ const Player = () => {
     }
   }, [audioInstance])
 
-  return (
+  const playerContent = (
     <ThemeProvider theme={createMuiTheme(theme)}>
       <ReactJkMusicPlayer
         {...options}
@@ -994,6 +957,11 @@ const Player = () => {
       <GlobalHotKeys handlers={handlers} keyMap={keyMap} allowChanges />
     </ThemeProvider>
   )
+
+  if (typeof document !== 'undefined' && document.body) {
+    return ReactDOM.createPortal(playerContent, document.body)
+  }
+  return playerContent
 }
 
 export { Player }

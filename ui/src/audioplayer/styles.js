@@ -108,6 +108,118 @@ const useStyle = makeStyles(
       '& .music-player-panel .panel-content .player-content .group': {
         margin: '0 6px !important',
       },
+      '@media screen and (max-width:768px)': {
+        '& .music-player-panel': {
+          height: '60px !important',
+          paddingBottom: 'env(safe-area-inset-bottom, 0px) !important',
+          overflow: 'visible !important',
+        },
+        '& .music-player-panel .panel-content': {
+          height: '60px !important',
+          padding: '0 10px !important',
+          position: 'relative !important',
+          display: 'flex !important',
+          alignItems: 'center !important',
+          justifyContent: 'space-between !important',
+        },
+        '& .music-player-panel .progress-bar-content .progress-bar': {
+          position: 'absolute !important',
+          top: '0 !important',
+          left: '0 !important',
+          right: '0 !important',
+          width: '100% !important',
+          height: '3px !important',
+          padding: '0 !important',
+          margin: '0 !important',
+          zIndex: '20 !important',
+        },
+        '& .music-player-panel .progress-bar .current-time, & .music-player-panel .progress-bar .progress-load-bar, & .music-player-panel .audio-time':
+          {
+            display: 'none !important',
+          },
+        '& .music-player-panel .progress-bar .rc-slider': {
+          padding: '0 !important',
+          margin: '0 !important',
+          height: '3px !important',
+        },
+        '& .music-player-panel .progress-bar .rc-slider-rail, & .music-player-panel .progress-bar .rc-slider-track':
+          {
+            height: '3px !important',
+            borderRadius: '0 !important',
+          },
+        '& .music-player-panel .progress-bar .rc-slider-handle': {
+          display: 'none !important',
+        },
+        '& .music-player-panel .panel-content .img-content, & .music-player-panel .panel-content div.img-rotate':
+          {
+            width: '38px !important',
+            height: '38px !important',
+            minWidth: '38px !important',
+            marginRight: '8px !important',
+            borderRadius: '4px !important',
+          },
+        '& .music-player-panel .panel-content .progress-bar-content': {
+          padding: '0 4px !important',
+          margin: '0 !important',
+          maxWidth: 'calc(100vw - 200px) !important',
+          flex: '1 1 auto !important',
+          minWidth: '0 !important',
+        },
+        '& .music-player-panel .panel-content .progress-bar-content .audio-title':
+          {
+            fontSize: '13px !important',
+            whiteSpace: 'nowrap !important',
+            overflow: 'hidden !important',
+            textOverflow: 'ellipsis !important',
+            display: 'block !important',
+            lineHeight: '1.3 !important',
+          },
+        '& .music-player-panel .panel-content .progress-bar-content .songInfo': {
+          fontSize: '11px !important',
+          whiteSpace: 'nowrap !important',
+          overflow: 'hidden !important',
+          textOverflow: 'ellipsis !important',
+          display: 'block !important',
+          lineHeight: '1.2 !important',
+          opacity: '0.75 !important',
+        },
+        '& .music-player-panel .panel-content .progress-bar-content .qualityInfo':
+          {
+            display: 'none !important',
+          },
+        '& .music-player-panel .panel-content .player-content': {
+          display: 'flex !important',
+          alignItems: 'center !important',
+          justifyContent: 'flex-end !important',
+          flexShrink: '0 !important',
+        },
+        '& .music-player-panel .panel-content .player-content .group': {
+          margin: '0 2px !important',
+        },
+        '& .sound-operation, & .play-sounds, & .loop-btn, & .play-mode-title, & .lyric-btn':
+          {
+            display: 'none !important',
+          },
+        '& [data-testid="save-queue-button"], & button[aria-label*="love"], & .mobileListItem':
+          {
+            display: 'none !important',
+          },
+        '& .music-player-panel .panel-content .player-content .prev-audio, & .music-player-panel .panel-content .player-content .next-audio':
+          {
+            fontSize: '18px !important',
+          },
+        '& .music-player-panel .panel-content .player-content .play-btn': {
+          fontSize: '26px !important',
+          margin: '0 4px !important',
+        },
+        '& .music-player-panel .panel-content .player-content .audio-lists-btn':
+          {
+            display: 'flex !important',
+            alignItems: 'center !important',
+            marginLeft: '4px !important',
+            fontSize: '20px !important',
+          },
+      },
       '@media screen and (max-width:810px)': {
         '& .sound-operation': {
           display: 'none',
