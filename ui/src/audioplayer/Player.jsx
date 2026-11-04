@@ -35,7 +35,7 @@ import { keyMap } from '../hotkeys'
 import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
-import { httpClient } from '../dataProvider'
+import { httpClient, clientUniqueId } from '../dataProvider'
 import HQPlayerTakeoverDialog from './HQPlayerTakeoverDialog'
 
 const Player = () => {
@@ -155,6 +155,14 @@ const Player = () => {
     const handleUserPlaybackState = (e) => {
       const serverState = e.detail
       if (!serverState) return
+
+      // Echo Suppression: Ignore updates originated from this client to protect local playback
+      if (
+        serverState.sourceClient &&
+        serverState.sourceClient === clientUniqueId
+      ) {
+        return
+      }
 
       if (
         serverState.outputTarget &&
@@ -495,6 +503,9 @@ const Player = () => {
     const isRemote = activeOutputDeviceRef.current !== 'local'
     const isPlaying =
       audioInstance && !audioInstance.paused && !audioInstance.ended
+    const shouldAutoPlay = Boolean(
+      playerState.clear || playerState.playIndex != null || isPlaying,
+    )
 
     const sendQueue = (forceTakeover = false) => {
       httpClient('/api/output/queue', {
@@ -507,7 +518,7 @@ const Player = () => {
               ? audioInstance.currentTime
               : 0,
           playMode: playerState.mode,
-          autoPlay: isRemote ? isPlaying : false,
+          autoPlay: shouldAutoPlay,
           forceTakeover,
         }),
       }).catch((err) => {

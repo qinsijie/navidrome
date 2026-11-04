@@ -110,7 +110,9 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 					http.Error(w, "stream relay pull error: "+err.Error(), http.StatusBadGateway)
 					return
 				}
-				relay.ServeHTTP(w, r)
+				pacingRate := stream.CalculateAudioPacingRate(int64(mf.Size), mf.Duration, mf.Suffix)
+				pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 384*1024)
+				relay.ServeHTTP(pw, r)
 				return
 			}
 		}
@@ -157,6 +159,7 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Content-Duration", strconv.FormatFloat(float64(mf.Duration), 'G', -1, 32))
 
+		pacingRate := stream.CalculateAudioPacingRate(fi.Size(), mf.Duration, mf.Suffix)
 		if stream.IsStreamDebug {
 			log.Info(r.Context(), "Audio Stream Request Received",
 				"trackId", id,
@@ -167,6 +170,7 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 				"method", r.Method,
 				"remoteAddr", r.RemoteAddr,
 				"isRawPassthrough", true,
+				"pacingRateKBps", int(pacingRate/1024),
 			)
 		} else {
 			log.Debug(r.Context(), "Audio Stream Request Received",
@@ -178,11 +182,12 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 				"method", r.Method,
 				"remoteAddr", r.RemoteAddr,
 				"isRawPassthrough", true,
+				"pacingRateKBps", int(pacingRate/1024),
 			)
 		}
 
-		bw := stream.NewBurstResponseWriter(w)
-		http.ServeContent(bw, r, fi.Name(), fi.ModTime(), f)
+		pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 384*1024)
+		http.ServeContent(pw, r, fi.Name(), fi.ModTime(), f)
 	}
 
 	r.Get("/output/stream/{id}", streamHandler)
@@ -418,10 +423,12 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			}
 		}
 
-		if err := mgr.GetSession().SetQueue(req.Tracks, req.StartIndex, req.TimeOffset, req.PlayMode, req.AutoPlay); err != nil {
-			log.Error(r.Context(), "Failed to set output queue", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		if mgr.GetActiveDevice() != string(output.DeviceTypeLocal) {
+			if err := mgr.GetSession().SetQueue(req.Tracks, req.StartIndex, req.TimeOffset, req.PlayMode, req.AutoPlay); err != nil {
+				log.Error(r.Context(), "Failed to set output queue", err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
