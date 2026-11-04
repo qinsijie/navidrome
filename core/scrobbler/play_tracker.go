@@ -288,7 +288,7 @@ func (p *playTracker) ReportPlayback(ctx context.Context, params ReportPlaybackP
 
 	// Unify playback session tracking key per user: one user has exactly ONE playback session
 	sessionKey := clientId
-	if user != nil && user.ID != "" {
+	if user.ID != "" {
 		sessionKey = "user:" + user.ID
 	}
 
