@@ -400,10 +400,6 @@ const Player = () => {
   useEffect(() => {
     if (activeOutputDevice === 'local') {
       document.querySelectorAll('.nd-stream-status-pill').forEach((el) => el.remove())
-      httpClient('/api/output/control', {
-        method: 'POST',
-        body: JSON.stringify({ action: 'stop' }),
-      }).catch(() => {})
     }
   }, [activeOutputDevice])
 
@@ -833,7 +829,7 @@ const Player = () => {
     }
   }, [isMobilePlayer, audioInstance])
 
-  // MediaSession position state & mobile background resume breakpoint recovery
+  // MediaSession position state, playback state & mobile background resume breakpoint recovery
   useEffect(() => {
     if (!audioInstance) return
 
@@ -861,15 +857,84 @@ const Player = () => {
       }
     }
 
+    const handlePlay = () => {
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'playing'
+      }
+    }
+
+    const handlePause = () => {
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'paused'
+      }
+    }
+
+    const handleEnded = () => {
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'none'
+      }
+    }
+
+    const handleTimeUpdate = () => {
+      if (audioInstance.currentTime != null && !isNaN(audioInstance.currentTime)) {
+        lastPositionMsRef.current = Math.floor(audioInstance.currentTime * 1000)
+        if (currentTrackIdRef.current) {
+          try {
+            sessionStorage.setItem(
+              'nd_pos_' + currentTrackIdRef.current,
+              String(audioInstance.currentTime),
+            )
+          } catch (e) {}
+        }
+      }
+      updatePositionState()
+    }
+
+    // Recover playback position on metadata loaded or resume
+    const handleRestorePosition = () => {
+      const trackId = currentTrackIdRef.current
+      let savedSec = (lastPositionMsRef.current || 0) / 1000
+      if (savedSec <= 2 && trackId) {
+        try {
+          const val = parseFloat(sessionStorage.getItem('nd_pos_' + trackId))
+          if (!isNaN(val) && val > 2) {
+            savedSec = val
+          }
+        } catch (e) {}
+      }
+
+      if (
+        savedSec > 2 &&
+        audioInstance &&
+        (audioInstance.currentTime === 0 || audioInstance.currentTime == null) &&
+        !audioInstance.ended &&
+        audioInstance.duration &&
+        savedSec < audioInstance.duration - 2
+      ) {
+        try {
+          audioInstance.currentTime = savedSec
+        } catch (e) {}
+      }
+    }
+
     // Recover playback position on mobile Webview/tab resume if stream stalled or reset to 0
     const handleVisibilityOrResume = () => {
       if (document.visibilityState === 'visible' && audioInstance) {
-        const savedPosSec = (lastPositionMsRef.current || 0) / 1000
+        const trackId = currentTrackIdRef.current
+        let savedPosSec = (lastPositionMsRef.current || 0) / 1000
+        if (savedPosSec <= 2 && trackId) {
+          try {
+            const val = parseFloat(sessionStorage.getItem('nd_pos_' + trackId))
+            if (!isNaN(val) && val > 2) {
+              savedPosSec = val
+            }
+          } catch (e) {}
+        }
         if (
           savedPosSec > 2 &&
           (audioInstance.currentTime === 0 || audioInstance.currentTime == null) &&
           !audioInstance.ended &&
-          currentTrackIdRef.current
+          trackId
         ) {
           try {
             audioInstance.currentTime = savedPosSec
@@ -883,14 +948,83 @@ const Player = () => {
       }
     }
 
-    audioInstance.addEventListener('timeupdate', updatePositionState)
+    // Register full MediaSession action handlers
+    const mediaSessionActions = [
+      ['play', () => { audioInstance.play().catch(() => {}) }],
+      ['pause', () => { audioInstance.pause() }],
+      [
+        'previoustrack',
+        () => {
+          if (typeof audioInstance.playPrev === 'function') {
+            audioInstance.playPrev()
+          }
+        },
+      ],
+      [
+        'nexttrack',
+        () => {
+          if (typeof audioInstance.playNext === 'function') {
+            audioInstance.playNext()
+          }
+        },
+      ],
+      [
+        'seekto',
+        (details) => {
+          if (details && details.seekTime != null) {
+            audioInstance.currentTime = details.seekTime
+          }
+        },
+      ],
+      [
+        'seekforward',
+        (details) => {
+          audioInstance.currentTime = Math.min(
+            audioInstance.duration || Infinity,
+            (audioInstance.currentTime || 0) + (details?.seekOffset || 10),
+          )
+        },
+      ],
+      [
+        'seekbackward',
+        (details) => {
+          audioInstance.currentTime = Math.max(
+            0,
+            (audioInstance.currentTime || 0) - (details?.seekOffset || 10),
+          )
+        },
+      ],
+    ]
+
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = audioInstance.paused
+        ? 'paused'
+        : 'playing'
+      mediaSessionActions.forEach(([action, handler]) => {
+        try {
+          navigator.mediaSession.setActionHandler(action, handler)
+        } catch (e) {}
+      })
+    }
+
+    audioInstance.addEventListener('play', handlePlay)
+    audioInstance.addEventListener('pause', handlePause)
+    audioInstance.addEventListener('ended', handleEnded)
+    audioInstance.addEventListener('timeupdate', handleTimeUpdate)
     audioInstance.addEventListener('durationchange', updatePositionState)
+    audioInstance.addEventListener('loadedmetadata', handleRestorePosition)
+    audioInstance.addEventListener('canplay', handleRestorePosition)
     document.addEventListener('visibilitychange', handleVisibilityOrResume)
     window.addEventListener('online', handleVisibilityOrResume)
 
     return () => {
-      audioInstance.removeEventListener('timeupdate', updatePositionState)
+      audioInstance.removeEventListener('play', handlePlay)
+      audioInstance.removeEventListener('pause', handlePause)
+      audioInstance.removeEventListener('ended', handleEnded)
+      audioInstance.removeEventListener('timeupdate', handleTimeUpdate)
       audioInstance.removeEventListener('durationchange', updatePositionState)
+      audioInstance.removeEventListener('loadedmetadata', handleRestorePosition)
+      audioInstance.removeEventListener('canplay', handleRestorePosition)
       document.removeEventListener('visibilitychange', handleVisibilityOrResume)
       window.removeEventListener('online', handleVisibilityOrResume)
     }

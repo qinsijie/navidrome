@@ -542,7 +542,10 @@ func GetSonglistDetailNative(ctx context.Context, source, id string) (*SongListD
 			}
 		}
 	} else if strings.ToLower(source) == "kw" {
-		apiURL := fmt.Sprintf("http://nplserver.kuwo.cn/pl.svc?op=getlistinfo&pid=%s&pn=0&rn=100&encode=utf8&keyset=pl2012&identity=kuwo&pcmp4=1&vipver=MUSIC_9.0.5.0_W1&newver=1", url.QueryEscape(id))
+		apiURL := fmt.Sprintf("http://kbangserver.kuwo.cn/ksong.s?from=pc&fmt=json&type=bang&data=content&id=%s&pn=0&rn=100", url.QueryEscape(id))
+		if len(id) > 5 {
+			apiURL = fmt.Sprintf("http://nplserver.kuwo.cn/pl.svc?op=getlistinfo&pid=%s&pn=0&rn=100&encode=utf8&keyset=pl2012&identity=kuwo&pcmp4=1&vipver=MUSIC_9.0.5.0_W1&newver=1", url.QueryEscape(id))
+		}
 		req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 		if err != nil {
 			return detail, err
@@ -556,26 +559,33 @@ func GetSonglistDetailNative(ctx context.Context, source, id string) (*SongListD
 
 		var data struct {
 			Title     string `json:"title"`
+			Name      string `json:"name"`
 			Info      string `json:"info"`
 			Pic       string `json:"pic"`
 			Musiclist []struct {
-				ID       string `json:"id"`
-				Name     string `json:"name"`
-				Artist   string `json:"artist"`
-				Album    string `json:"album"`
-				Duration string `json:"duration"`
+				ID           string `json:"id"`
+				Name         string `json:"name"`
+				Artist       string `json:"artist"`
+				Album        string `json:"album"`
+				Duration     string `json:"duration"`
+				SongDuration string `json:"song_duration"`
 			} `json:"musiclist"`
 		}
 
 		if err := json.NewDecoder(resp.Body).Decode(&data); err == nil {
 			if data.Title != "" {
 				detail.Title = data.Title
+			} else if data.Name != "" {
+				detail.Title = data.Name
 			}
 			detail.Desc = data.Info
 			detail.CoverURL = data.Pic
 
 			for _, m := range data.Musiclist {
-				dur, _ := strconv.ParseFloat(m.Duration, 64)
+				dur, _ := strconv.ParseFloat(m.SongDuration, 64)
+				if dur == 0 {
+					dur, _ = strconv.ParseFloat(m.Duration, 64)
+				}
 				detail.List = append(detail.List, &OnlineTrack{
 					UniversalID:  BuildUniversalID("kw", m.ID),
 					ProtocolPath: BuildProtocolPath("kw", m.ID, QualityFlac),
@@ -585,6 +595,154 @@ func GetSonglistDetailNative(ctx context.Context, source, id string) (*SongListD
 					Artist:       m.Artist,
 					Album:        m.Album,
 					Duration:     dur,
+					Quality:      QualityFlac,
+					Qualities:    []string{Quality128k, Quality320k, QualityFlac},
+				})
+			}
+		}
+	} else if strings.ToLower(source) == "kg" {
+		apiURL := fmt.Sprintf("http://m.kugou.com/rank/info/?rankid=%s&page=1&json=true", url.QueryEscape(id))
+		req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+		if err != nil {
+			return detail, err
+		}
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return detail, err
+		}
+		defer resp.Body.Close()
+
+		var data struct {
+			Info struct {
+				Rankname string `json:"rankname"`
+				Intro    string `json:"intro"`
+				Imgurl   string `json:"imgurl"`
+			} `json:"info"`
+			Songs struct {
+				List []struct {
+					Hash     string `json:"hash"`
+					Sqhash   string `json:"sqhash"`
+					Songname string `json:"songname"`
+					Filename string `json:"filename"`
+					Duration int64  `json:"duration"`
+					Authors  []struct {
+						AuthorName string `json:"author_name"`
+					} `json:"authors"`
+					AlbumSizableCover string `json:"album_sizable_cover"`
+				} `json:"list"`
+			} `json:"songs"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&data); err == nil {
+			if data.Info.Rankname != "" {
+				detail.Title = data.Info.Rankname
+			}
+			detail.Desc = data.Info.Intro
+			detail.CoverURL = strings.Replace(data.Info.Imgurl, "{size}", "400", -1)
+
+			for _, s := range data.Songs.List {
+				songID := s.Hash
+				if songID == "" {
+					songID = s.Sqhash
+				}
+				var artists []string
+				for _, a := range s.Authors {
+					if a.AuthorName != "" {
+						artists = append(artists, a.AuthorName)
+					}
+				}
+				artistName := strings.Join(artists, " / ")
+				title := s.Songname
+				if title == "" && strings.Contains(s.Filename, " - ") {
+					parts := strings.SplitN(s.Filename, " - ", 2)
+					if artistName == "" {
+						artistName = strings.TrimSpace(parts[0])
+					}
+					title = strings.TrimSpace(parts[1])
+				}
+				cover := strings.Replace(s.AlbumSizableCover, "{size}", "400", -1)
+
+				detail.List = append(detail.List, &OnlineTrack{
+					UniversalID:  BuildUniversalID("kg", songID),
+					ProtocolPath: BuildProtocolPath("kg", songID, QualityFlac),
+					Source:       "kg",
+					SongID:       songID,
+					Title:        title,
+					Artist:       artistName,
+					Duration:     float64(s.Duration),
+					CoverURL:     cover,
+					Quality:      QualityFlac,
+					Qualities:    []string{Quality128k, Quality320k, QualityFlac},
+				})
+			}
+		}
+	} else if strings.ToLower(source) == "tx" {
+		apiURL := fmt.Sprintf("https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_cp.fcg?topid=%s&format=json", url.QueryEscape(id))
+		req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+		if err != nil {
+			return detail, err
+		}
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return detail, err
+		}
+		defer resp.Body.Close()
+
+		var data struct {
+			Topinfo struct {
+				ListName string `json:"ListName"`
+				Info     string `json:"info"`
+				Pic      string `json:"pic"`
+				PicAlbum string `json:"pic_album"`
+			} `json:"topinfo"`
+			Songlist []struct {
+				Data struct {
+					Songmid  string `json:"songmid"`
+					Songname string `json:"songname"`
+					Interval int64  `json:"interval"`
+					Singer   []struct {
+						Name string `json:"name"`
+					} `json:"singer"`
+					Albumname string `json:"albumname"`
+					Albummid  string `json:"albummid"`
+				} `json:"data"`
+			} `json:"songlist"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&data); err == nil {
+			if data.Topinfo.ListName != "" {
+				detail.Title = data.Topinfo.ListName
+			}
+			detail.Desc = data.Topinfo.Info
+			detail.CoverURL = data.Topinfo.Pic
+			if detail.CoverURL == "" {
+				detail.CoverURL = data.Topinfo.PicAlbum
+			}
+
+			for _, item := range data.Songlist {
+				t := item.Data
+				var singers []string
+				for _, s := range t.Singer {
+					if s.Name != "" {
+						singers = append(singers, s.Name)
+					}
+				}
+				cover := ""
+				if t.Albummid != "" {
+					cover = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", t.Albummid)
+				}
+				detail.List = append(detail.List, &OnlineTrack{
+					UniversalID:  BuildUniversalID("tx", t.Songmid),
+					ProtocolPath: BuildProtocolPath("tx", t.Songmid, QualityFlac),
+					Source:       "tx",
+					SongID:       t.Songmid,
+					Title:        t.Songname,
+					Artist:       strings.Join(singers, " / "),
+					Album:        t.Albumname,
+					Duration:     float64(t.Interval),
+					CoverURL:     cover,
 					Quality:      QualityFlac,
 					Qualities:    []string{Quality128k, Quality320k, QualityFlac},
 				})

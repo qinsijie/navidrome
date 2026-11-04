@@ -129,8 +129,11 @@ const useStyles = makeStyles((theme) => ({
 }))
 
 const SOURCES = [
-  { id: 'wy', label: '网易云音乐' },
-  { id: 'kw', label: '酷我音乐' },
+  { id: 'wy', label: '☁️ 小芸音乐' },
+  { id: 'kw', label: '🐌 小蜗音乐' },
+  { id: 'kg', label: '🐕 小构音乐' },
+  { id: 'tx', label: '🐧 小秋音乐' },
+  { id: 'mg', label: '🍯 小蜜音乐' },
 ]
 
 export const OnlineMusicPlaylists = () => {
@@ -329,16 +332,42 @@ export const OnlineMusicPlaylists = () => {
                         {idx + 1}
                       </Typography>
                       <ListItemText
+                        style={{ paddingRight: 72, minWidth: 0, overflow: 'hidden' }}
                         primary={
-                          <Typography variant="subtitle2" style={{ fontWeight: 600 }}>
+                          <Typography
+                            variant="subtitle2"
+                            style={{
+                              fontWeight: 600,
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                          >
                             {track.title}
                           </Typography>
                         }
                         secondary={
-                          <Box display="flex" alignItems="center" mt={0.5}>
+                          <Box
+                            display="flex"
+                            alignItems="center"
+                            mt={0.5}
+                            style={{
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}
+                          >
                             <QualityBadge quality={track.quality || 'flac'} />
                             <SourceBadge source={track.source} />
-                            <span style={{ fontSize: '0.8rem', color: '#9CA3AF' }}>
+                            <span
+                              style={{
+                                fontSize: '0.8rem',
+                                color: '#9CA3AF',
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >
                               {track.artist} {track.album ? `- ${track.album}` : ''}
                             </span>
                           </Box>

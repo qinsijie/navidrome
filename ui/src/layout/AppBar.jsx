@@ -246,14 +246,18 @@ const AppBar = (props) => {
   const classes = useStyles(props)
   const onTitleClick = useEasterEggVConsole()
   return (
-    <RAAppBar {...props} container={Fragment} userMenu={<CustomUserMenu />}>
+    <RAAppBar
+      {...props}
+      container={Fragment}
+      userMenu={<CustomUserMenu />}
+      onClick={onTitleClick}
+    >
       <NavBackButton />
       <Typography
         variant="h6"
         color="inherit"
         className={classes.title}
         id="react-admin-title"
-        onClick={onTitleClick}
         style={{ cursor: config.isDebug ? 'pointer' : 'default' }}
       />
     </RAAppBar>

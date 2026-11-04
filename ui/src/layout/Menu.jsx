@@ -111,6 +111,14 @@ const Menu = ({ dense = false }) => {
   const subItems = (subMenu) => (resource) =>
     resource.hasList && resource.options && resource.options.subMenu === subMenu
 
+  const undefinedResources = resources.filter(subItems(undefined))
+  const beforeOnline = undefinedResources.filter(
+    (r) => r.name === 'artist' || r.name === 'song',
+  )
+  const afterOnline = undefinedResources.filter(
+    (r) => r.name !== 'artist' && r.name !== 'song',
+  )
+
   return (
     <div
       className={clsx(classes.root, {
@@ -131,6 +139,7 @@ const Menu = ({ dense = false }) => {
           renderAlbumMenuItemLink(type, albumLists[type]),
         )}
       </SubMenu>
+      {beforeOnline.map(renderResourceMenuItemLink)}
       <SubMenu
         handleToggle={() => handleToggle('menuOnlineMusic')}
         isOpen={state.menuOnlineMusic}
@@ -176,7 +185,7 @@ const Menu = ({ dense = false }) => {
           exact
         />
       </SubMenu>
-      {resources.filter(subItems(undefined)).map(renderResourceMenuItemLink)}
+      {afterOnline.map(renderResourceMenuItemLink)}
       {config.devSidebarPlaylists && open ? (
         <>
           <Divider />

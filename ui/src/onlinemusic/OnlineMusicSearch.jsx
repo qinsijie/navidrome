@@ -213,12 +213,12 @@ const useStyles = makeStyles((theme) => ({
 }))
 
 const SOURCE_OPTIONS = [
-  { id: 'all', label: '聚合大会' },
-  { id: 'kw', label: '小蜗音乐' },
-  { id: 'kg', label: '小构音乐' },
-  { id: 'tx', label: '小秋音乐' },
-  { id: 'wy', label: '小芸音乐' },
-  { id: 'mg', label: '小蜜音乐' },
+  { id: 'all', label: '🌐 聚合大会' },
+  { id: 'wy', label: '☁️ 小芸音乐' },
+  { id: 'kw', label: '🐌 小蜗音乐' },
+  { id: 'kg', label: '🐕 小构音乐' },
+  { id: 'tx', label: '🐧 小秋音乐' },
+  { id: 'mg', label: '🍯 小蜜音乐' },
 ]
 
 export const OnlineMusicSearch = () => {

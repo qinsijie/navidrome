@@ -252,17 +252,48 @@ func (api *Router) handleSearchTips(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *Router) handleGetSonglists(w http.ResponseWriter, r *http.Request) {
-	// Return curated default songlists or call script if supported
 	source := r.URL.Query().Get("source")
 	if source == "" {
 		source = "wy"
 	}
 
-	lists := []*SongList{
-		{ID: "3778678", Source: source, Title: "云音乐热歌榜", Author: "网易云音乐", CoverURL: "https://p2.music.126.net/GH3tAYgt2G1J94z_Q6n9kw==/109951167909386407.jpg"},
-		{ID: "19723756", Source: source, Title: "云音乐飙升榜", Author: "网易云音乐", CoverURL: "https://p2.music.126.net/N2HO5xfYEqyvzyqISslaac==/109951166962389879.jpg"},
-		{ID: "3779629", Source: source, Title: "云音乐新歌榜", Author: "网易云音乐", CoverURL: "https://p2.music.126.net/wP7Uqnqnqn0q--95z8Q0ww==/109951166962377050.jpg"},
-		{ID: "2884035", Source: source, Title: "网易原创歌曲榜", Author: "网易云音乐", CoverURL: "https://p2.music.126.net/sBzD11nforcuh1jdLSgX7g==/18740076185638788.jpg"},
+	var lists []*SongList
+	switch strings.ToLower(source) {
+	case "kw":
+		lists = []*SongList{
+			{ID: "16", Source: "kw", Title: "酷我热歌榜", Author: "小蜗音乐", CoverURL: "http://img1.kuwo.cn/star/mboxAlbum/BangPic/small/au_16_30.jpg"},
+			{ID: "17", Source: "kw", Title: "酷我新歌榜", Author: "小蜗音乐", CoverURL: "http://img1.kuwo.cn/star/mboxAlbum/BangPic/small/au_17_30.jpg"},
+			{ID: "93", Source: "kw", Title: "酷我飙升榜", Author: "小蜗音乐", CoverURL: "http://img1.kuwo.cn/star/mboxAlbum/BangPic/small/au_93_30.jpg"},
+			{ID: "158", Source: "kw", Title: "抖音热歌榜", Author: "小蜗音乐", CoverURL: "http://img1.kuwo.cn/star/mboxAlbum/BangPic/small/au_158_30.jpg"},
+		}
+	case "kg":
+		lists = []*SongList{
+			{ID: "8888", Source: "kg", Title: "酷狗TOP500", Author: "小构音乐", CoverURL: "http://imge.kugou.com/mcommon/400/20220112/20220112175202472916.png"},
+			{ID: "6666", Source: "kg", Title: "酷狗飙升榜", Author: "小构音乐", CoverURL: "http://imge.kugou.com/mcommon/400/20241219/20241219164226731176.png"},
+			{ID: "23784", Source: "kg", Title: "网络红歌榜", Author: "小构音乐", CoverURL: "http://imge.kugou.com/mcommon/400/20240505/20240505213952649412.png"},
+			{ID: "31308", Source: "kg", Title: "华语新歌榜", Author: "小构音乐", CoverURL: "http://imge.kugou.com/mcommon/400/20241219/20241219164209670219.png"},
+		}
+	case "tx":
+		lists = []*SongList{
+			{ID: "26", Source: "tx", Title: "巅峰榜·热歌", Author: "小秋音乐", CoverURL: "http://y.gtimg.cn/music/common/upload/iphone_order_channel/20150820174743.jpg"},
+			{ID: "27", Source: "tx", Title: "巅峰榜·新歌", Author: "小秋音乐", CoverURL: "http://y.gtimg.cn/music/common/upload/iphone_order_channel/20150820174737.jpg"},
+			{ID: "4", Source: "tx", Title: "巅峰榜·流行指数", Author: "小秋音乐", CoverURL: "http://y.gtimg.cn/music/common/upload/iphone_order_channel/20150820174737.jpg"},
+			{ID: "62", Source: "tx", Title: "腾讯由你榜", Author: "小秋音乐", CoverURL: "http://y.gtimg.cn/music/common/upload/iphone_order_channel/20150820174743.jpg"},
+		}
+	case "mg":
+		lists = []*SongList{
+			{ID: "3778678", Source: "mg", Title: "咪咕热歌精选", Author: "小蜜音乐", CoverURL: "https://p2.music.126.net/GH3tAYgt2G1J94z_Q6n9kw==/109951167909386407.jpg"},
+			{ID: "19723756", Source: "mg", Title: "咪咕潮流精选", Author: "小蜜音乐", CoverURL: "https://p2.music.126.net/N2HO5xfYEqyvzyqISslaac==/109951166962389879.jpg"},
+			{ID: "3779629", Source: "mg", Title: "华语流行精选", Author: "小蜜音乐", CoverURL: "https://p2.music.126.net/wP7Uqnqnqn0q--95z8Q0ww==/109951166962377050.jpg"},
+			{ID: "2884035", Source: "mg", Title: "原创现场精选", Author: "小蜜音乐", CoverURL: "https://p2.music.126.net/sBzD11nforcuh1jdLSgX7g==/18740076185638788.jpg"},
+		}
+	default:
+		lists = []*SongList{
+			{ID: "3778678", Source: "wy", Title: "云音乐热歌榜", Author: "小芸音乐", CoverURL: "https://p2.music.126.net/GH3tAYgt2G1J94z_Q6n9kw==/109951167909386407.jpg"},
+			{ID: "19723756", Source: "wy", Title: "云音乐飙升榜", Author: "小芸音乐", CoverURL: "https://p2.music.126.net/N2HO5xfYEqyvzyqISslaac==/109951166962389879.jpg"},
+			{ID: "3779629", Source: "wy", Title: "云音乐新歌榜", Author: "小芸音乐", CoverURL: "https://p2.music.126.net/wP7Uqnqnqn0q--95z8Q0ww==/109951166962377050.jpg"},
+			{ID: "2884035", Source: "wy", Title: "网易原创歌曲榜", Author: "小芸音乐", CoverURL: "https://p2.music.126.net/sBzD11nforcuh1jdLSgX7g==/18740076185638788.jpg"},
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -299,11 +330,43 @@ func (api *Router) handleGetLeaderboards(w http.ResponseWriter, r *http.Request)
 		source = "wy"
 	}
 
-	boards := []*Leaderboard{
-		{ID: "3778678", Source: source, Name: "热歌榜", CoverURL: "https://p2.music.126.net/GH3tAYgt2G1J94z_Q6n9kw==/109951167909386407.jpg"},
-		{ID: "19723756", Source: source, Name: "飙升榜", CoverURL: "https://p2.music.126.net/N2HO5xfYEqyvzyqISslaac==/109951166962389879.jpg"},
-		{ID: "3779629", Source: source, Name: "新歌榜", CoverURL: "https://p2.music.126.net/wP7Uqnqnqn0q--95z8Q0ww==/109951166962377050.jpg"},
-		{ID: "2884035", Source: source, Name: "原创榜", CoverURL: "https://p2.music.126.net/sBzD11nforcuh1jdLSgX7g==/18740076185638788.jpg"},
+	var boards []*Leaderboard
+	switch strings.ToLower(source) {
+	case "kw":
+		boards = []*Leaderboard{
+			{ID: "16", Source: "kw", Name: "酷我热歌榜", CoverURL: "http://img1.kuwo.cn/star/mboxAlbum/BangPic/small/au_16_30.jpg"},
+			{ID: "17", Source: "kw", Name: "酷我新歌榜", CoverURL: "http://img1.kuwo.cn/star/mboxAlbum/BangPic/small/au_17_30.jpg"},
+			{ID: "93", Source: "kw", Name: "酷我飙升榜", CoverURL: "http://img1.kuwo.cn/star/mboxAlbum/BangPic/small/au_93_30.jpg"},
+			{ID: "158", Source: "kw", Name: "抖音热歌榜", CoverURL: "http://img1.kuwo.cn/star/mboxAlbum/BangPic/small/au_158_30.jpg"},
+		}
+	case "kg":
+		boards = []*Leaderboard{
+			{ID: "8888", Source: "kg", Name: "酷狗TOP500", CoverURL: "http://imge.kugou.com/mcommon/400/20220112/20220112175202472916.png"},
+			{ID: "6666", Source: "kg", Name: "酷狗飙升榜", CoverURL: "http://imge.kugou.com/mcommon/400/20241219/20241219164226731176.png"},
+			{ID: "23784", Source: "kg", Name: "网络红歌榜", CoverURL: "http://imge.kugou.com/mcommon/400/20240505/20240505213952649412.png"},
+			{ID: "31308", Source: "kg", Name: "华语新歌榜", CoverURL: "http://imge.kugou.com/mcommon/400/20241219/20241219164209670219.png"},
+		}
+	case "tx":
+		boards = []*Leaderboard{
+			{ID: "26", Source: "tx", Name: "巅峰榜·热歌", CoverURL: "http://y.gtimg.cn/music/common/upload/iphone_order_channel/20150820174743.jpg"},
+			{ID: "27", Source: "tx", Name: "巅峰榜·新歌", CoverURL: "http://y.gtimg.cn/music/common/upload/iphone_order_channel/20150820174737.jpg"},
+			{ID: "4", Source: "tx", Name: "巅峰榜·流行指数", CoverURL: "http://y.gtimg.cn/music/common/upload/iphone_order_channel/20150820174737.jpg"},
+			{ID: "62", Source: "tx", Name: "腾讯由你榜", CoverURL: "http://y.gtimg.cn/music/common/upload/iphone_order_channel/20150820174743.jpg"},
+		}
+	case "mg":
+		boards = []*Leaderboard{
+			{ID: "3778678", Source: "mg", Name: "咪咕热歌榜", CoverURL: "https://p2.music.126.net/GH3tAYgt2G1J94z_Q6n9kw==/109951167909386407.jpg"},
+			{ID: "19723756", Source: "mg", Name: "咪咕新歌榜", CoverURL: "https://p2.music.126.net/N2HO5xfYEqyvzyqISslaac==/109951166962389879.jpg"},
+			{ID: "3779629", Source: "mg", Name: "咪咕飙升榜", CoverURL: "https://p2.music.126.net/wP7Uqnqnqn0q--95z8Q0ww==/109951166962377050.jpg"},
+			{ID: "2884035", Source: "mg", Name: "影视金曲榜", CoverURL: "https://p2.music.126.net/sBzD11nforcuh1jdLSgX7g==/18740076185638788.jpg"},
+		}
+	default:
+		boards = []*Leaderboard{
+			{ID: "3778678", Source: "wy", Name: "热歌榜", CoverURL: "https://p2.music.126.net/GH3tAYgt2G1J94z_Q6n9kw==/109951167909386407.jpg"},
+			{ID: "19723756", Source: "wy", Name: "飙升榜", CoverURL: "https://p2.music.126.net/N2HO5xfYEqyvzyqISslaac==/109951166962389879.jpg"},
+			{ID: "3779629", Source: "wy", Name: "新歌榜", CoverURL: "https://p2.music.126.net/wP7Uqnqnqn0q--95z8Q0ww==/109951166962377050.jpg"},
+			{ID: "2884035", Source: "wy", Name: "原创榜", CoverURL: "https://p2.music.126.net/sBzD11nforcuh1jdLSgX7g==/18740076185638788.jpg"},
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

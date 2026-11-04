@@ -37,14 +37,14 @@ export const useEasterEggVConsole = () => {
   return () => {
     if (!config.isDebug) return
     const now = Date.now()
-    if (!window.__nd_tap_last || now - window.__nd_tap_last > 2000) {
+    if (!window.__nd_tap_last || now - window.__nd_tap_last > 3500) {
       window.__nd_tap_count = 1
     } else {
       window.__nd_tap_count = (window.__nd_tap_count || 0) + 1
     }
     window.__nd_tap_last = now
 
-    if (window.__nd_tap_count >= 5) {
+    if (window.__nd_tap_count >= 4) {
       window.__nd_tap_count = 0
       activateVConsole()
     }
