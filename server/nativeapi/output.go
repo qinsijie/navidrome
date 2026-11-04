@@ -484,9 +484,6 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			"nowPlaying":  mgr.GetNowPlaying(),
 		})
 	})
-			"nowPlaying":  mgr.GetNowPlaying(),
-		})
-	})
 
 	r.Post("/output/play", func(w http.ResponseWriter, r *http.Request) {
 		var req playStreamRequest
