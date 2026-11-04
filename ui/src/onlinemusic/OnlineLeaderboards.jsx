@@ -172,29 +172,29 @@ const useStyles = makeStyles((theme) => ({
     fontWeight: 600,
     fontSize: '0.9rem',
     color: theme.palette.text.primary,
-    lineHeight: 1.35,
+    lineHeight: 1.4,
+    whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
-    display: '-webkit-box',
-    '-webkit-line-clamp': 2,
-    '-webkit-box-orient': 'vertical',
-    wordBreak: 'break-all',
   },
   trackMeta: {
     display: 'flex',
     alignItems: 'center',
-    flexWrap: 'wrap',
     gap: 4,
-    marginTop: 4,
+    marginTop: 3,
     fontSize: '0.78rem',
     color: theme.palette.text.secondary,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
   },
   trackArtist: {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
     color: '#9CA3AF',
-    maxWidth: '100%',
+    flex: 1,
+    minWidth: 0,
   },
   trackActions: {
     width: 76,
@@ -388,7 +388,7 @@ export const OnlineLeaderboards = () => {
                       </div>
 
                       <div className={classes.trackContent}>
-                        <div className={classes.trackTitle}>
+                        <div className={classes.trackTitle} title={track.title}>
                           {track.title}
                         </div>
                         <div className={classes.trackMeta}>
