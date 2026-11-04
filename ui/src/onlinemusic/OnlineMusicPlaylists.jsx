@@ -69,6 +69,24 @@ const useStyles = makeStyles((theme) => ({
   sourceTabs: {
     marginBottom: theme.spacing(3),
     borderBottom: `1px solid ${theme.palette.divider}`,
+    [theme.breakpoints.down('xs')]: {
+      display: 'none',
+    },
+  },
+  sourceGridMobile: {
+    display: 'none',
+    marginBottom: theme.spacing(2.5),
+    [theme.breakpoints.down('xs')]: {
+      display: 'flex',
+    },
+  },
+  sourceCapsule: {
+    borderRadius: 8,
+    textTransform: 'none',
+    fontWeight: 600,
+    fontSize: '0.85rem',
+    height: 38,
+    boxShadow: 'none',
   },
   loadingContainer: {
     display: 'flex',
@@ -119,6 +137,8 @@ const useStyles = makeStyles((theme) => ({
   },
   trackItem: {
     padding: '12px 16px',
+    paddingRight: '88px !important',
+    position: 'relative',
     borderRadius: 6,
     borderBottom: `1px solid ${theme.palette.divider}`,
     transition: 'background-color 0.15s ease',
@@ -420,6 +440,7 @@ export const OnlineMusicPlaylists = () => {
         <Typography variant="h6">精选网络歌单</Typography>
       </Box>
 
+      {/* Desktop Tabs */}
       <Tabs
         value={source}
         onChange={(e, v) => setSource(v)}
@@ -431,6 +452,23 @@ export const OnlineMusicPlaylists = () => {
           <Tab key={s.id} value={s.id} label={s.label} />
         ))}
       </Tabs>
+
+      {/* Mobile 2-column Grid */}
+      <Grid container spacing={1} className={classes.sourceGridMobile}>
+        {SOURCES.map((s) => (
+          <Grid item xs={6} key={s.id}>
+            <Button
+              fullWidth
+              variant={source === s.id ? 'contained' : 'outlined'}
+              color={source === s.id ? 'primary' : 'default'}
+              className={classes.sourceCapsule}
+              onClick={() => setSource(s.id)}
+            >
+              {s.label}
+            </Button>
+          </Grid>
+        ))}
+      </Grid>
 
       {loading ? (
         <div className={classes.loadingContainer}>

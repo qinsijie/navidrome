@@ -136,6 +136,34 @@ const useStyle = makeStyles(
           maxWidth: '100vw !important',
           overflow: 'hidden !important',
         },
+        '& .music-player-panel .progress-bar-content .progress-bar': {
+          position: 'absolute !important',
+          top: '0 !important',
+          left: '0 !important',
+          right: '0 !important',
+          width: '100% !important',
+          height: '3px !important',
+          padding: '0 !important',
+          margin: '0 !important',
+          zIndex: '20 !important',
+        },
+        '& .music-player-panel .progress-bar .progress-load-bar, & .music-player-panel .audio-time':
+          {
+            display: 'none !important',
+          },
+        '& .music-player-panel .progress-bar .rc-slider': {
+          padding: '0 !important',
+          margin: '0 !important',
+          height: '3px !important',
+        },
+        '& .music-player-panel .progress-bar .rc-slider-rail, & .music-player-panel .progress-bar .rc-slider-track':
+          {
+            height: '3px !important',
+            borderRadius: '0 !important',
+          },
+        '& .music-player-panel .progress-bar .rc-slider-handle': {
+          display: 'none !important',
+        },
         '& .music-player-panel .panel-content .img-content, & .music-player-panel .panel-content div.img-rotate':
           {
             width: '36px !important',
@@ -146,7 +174,7 @@ const useStyle = makeStyles(
             flexShrink: '0 !important',
           },
         '& .music-player-panel .panel-content .progress-bar-content': {
-          padding: '0 6px !important',
+          padding: '0 4px !important',
           margin: '0 !important',
           maxWidth: 'none !important',
           flex: '1 1 auto !important',
@@ -155,49 +183,21 @@ const useStyle = makeStyles(
         },
         '& .music-player-panel .panel-content .progress-bar-content section.audio-main': {
           display: 'flex !important',
-          flexDirection: 'row !important',
           alignItems: 'center !important',
           width: '100% !important',
-          marginTop: '2px !important',
+          marginTop: '1px !important',
+          gap: '2px !important',
         },
         '& .music-player-panel .panel-content .progress-bar-content .current-time, & .music-player-panel .panel-content .progress-bar-content .duration': {
           display: 'inline-block !important',
           fontSize: '10px !important',
-          minWidth: '32px !important',
-          textAlign: 'center !important',
-          padding: '0 2px !important',
           lineHeight: '1.2 !important',
-          opacity: '0.8 !important',
-          flexShrink: '0 !important',
+          opacity: '0.7 !important',
         },
-        '& .music-player-panel .progress-bar-content .progress-bar': {
-          position: 'relative !important',
-          flex: '1 1 auto !important',
-          width: 'auto !important',
-          height: '14px !important',
-          padding: '0 !important',
-          margin: '0 6px !important',
-          zIndex: '1 !important',
-          display: 'flex !important',
-          alignItems: 'center !important',
-        },
-        '& .music-player-panel .progress-bar .progress-load-bar, & .music-player-panel .audio-time': {
-          display: 'none !important',
-        },
-        '& .music-player-panel .progress-bar .rc-slider': {
-          padding: '0 !important',
-          margin: '0 !important',
-          height: '3px !important',
-        },
-        '& .music-player-panel .progress-bar .rc-slider-rail, & .music-player-panel .progress-bar .rc-slider-track': {
-          height: '3px !important',
-          borderRadius: '2px !important',
-        },
-        '& .music-player-panel .progress-bar .rc-slider-handle': {
-          display: 'block !important',
-          width: '8px !important',
-          height: '8px !important',
-          marginTop: '-2.5px !important',
+        '& .music-player-panel .panel-content .progress-bar-content .current-time:after': {
+          content: '" / "',
+          padding: '0 2px',
+          opacity: '0.5',
         },
         '& .music-player-panel .panel-content .progress-bar-content .audio-title':
           {

@@ -431,6 +431,7 @@ const Player = () => {
 
   useEffect(() => {
     if (
+      !isMobilePlayer &&
       context === null &&
       audioInstance &&
       config.enableReplayGain &&
@@ -470,6 +471,10 @@ const Player = () => {
     }
 
     const handlePageHide = () => {
+      // If audio is currently playing, this is a background transition (lock screen or app switch), not a genuine unload
+      if (audioInstance && !audioInstance.paused) {
+        return
+      }
       if (currentTrackIdRef.current && !playerState.current?.isRadio) {
         stoppedRef.current = true
         try {
@@ -857,22 +862,45 @@ const Player = () => {
       }
     }
 
+    let wakeLockSentinel = null
+    const acquireWakeLock = async () => {
+      if ('wakeLock' in navigator && !wakeLockSentinel) {
+        try {
+          wakeLockSentinel = await navigator.wakeLock.request('screen')
+          wakeLockSentinel.addEventListener('release', () => {
+            wakeLockSentinel = null
+          })
+        } catch (e) {}
+      }
+    }
+    const releaseWakeLock = () => {
+      if (wakeLockSentinel) {
+        try {
+          wakeLockSentinel.release()
+        } catch (e) {}
+        wakeLockSentinel = null
+      }
+    }
+
     const handlePlay = () => {
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'playing'
       }
+      acquireWakeLock()
     }
 
     const handlePause = () => {
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'paused'
       }
+      releaseWakeLock()
     }
 
     const handleEnded = () => {
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'none'
       }
+      releaseWakeLock()
     }
 
     const handleTimeUpdate = () => {

@@ -15,7 +15,7 @@ const (
 	SlabSize            = 64 * 1024        // 64 KB per chunk
 	DefaultMaxSlabs     = 512              // 32 MB max in-memory window
 	MaxForwardSlop      = 2 * 1024 * 1024  // 2 MB forward seek tolerance
-	ConditionWaitTime   = 2500 * time.Millisecond // 2.5s safe timeout (below HQPE 3-5s read timeout)
+	ConditionWaitTime   = 30 * time.Second // 30s safe timeout for mobile background doze/throttling
 )
 
 var slabPool = sync.Pool{
@@ -249,7 +249,7 @@ func (b *SlabRingBuffer) ReadAt(p []byte, off int64) (n int, err error) {
 		case <-time.After(ConditionWaitTime):
 			b.mu.Lock()
 			if off >= b.writeCursor {
-				log.Warn("MusicEngine: Downstream read stalled for 2.5s. Returning graceful EOF to prevent player hang")
+				log.Warn("MusicEngine: Downstream read stalled for 30s. Returning graceful EOF to prevent player hang")
 				return 0, io.EOF
 			}
 		}
