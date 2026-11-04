@@ -32,13 +32,17 @@ const pad = (value) => {
   }
 }
 
-const makeMusicSrc = (trackId) =>
-  decisionService.getProfile()
+const makeMusicSrc = (trackId) => {
+  if (trackId && trackId.startsWith('online:')) {
+    return subsonic.streamUrl(trackId)
+  }
+  return decisionService.getProfile()
     ? () =>
         decisionService
           .resolveStreamUrl(trackId)
           .catch(() => subsonic.streamUrl(trackId))
     : subsonic.streamUrl(trackId)
+}
 
 const mapToAudioLists = (item) => {
   // If item comes from a playlist, trackId is mediaFileId

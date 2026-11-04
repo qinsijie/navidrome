@@ -214,6 +214,14 @@ describe('decisionService', () => {
       expect(mockFetchFn).toHaveBeenCalledTimes(1)
     })
 
+    it('bypasses decision and returns direct stream URL for online tracks without calling fetchFn', async () => {
+      service.setProfile(fakeProfile)
+      const url = await service.resolveStreamUrl('online:kw:12345')
+      expect(url).toContain('stream')
+      expect(url).toContain('id=online%3Akw%3A12345')
+      expect(mockFetchFn).not.toHaveBeenCalled()
+    })
+
     it('falls back to stream URL when decision has no transcodeParams', async () => {
       service.setProfile(fakeProfile)
       mockFetchFn.mockResolvedValue({

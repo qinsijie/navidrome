@@ -29,6 +29,7 @@ import config from '../config'
 import authProvider from '../authProvider'
 import { clearQueue } from '../actions'
 import { INSIGHTS_DOC_URL } from '../consts.js'
+import { useEasterEggVConsole } from '../utils/vconsole'
 
 const useStyles = makeStyles(
   (theme) => ({
@@ -119,6 +120,7 @@ const renderInput = ({
 const FormLogin = ({ loading, handleSubmit, validate, onFnosLogin }) => {
   const translate = useTranslate()
   const classes = useStyles()
+  const onEasterEggClick = useEasterEggVConsole()
   const [showManualLogin, setShowManualLogin] = useState(false)
   const [openReset, setOpenReset] = useState(false)
   const [newPassword, setNewPassword] = useState('')
@@ -154,7 +156,11 @@ const FormLogin = ({ loading, handleSubmit, validate, onFnosLogin }) => {
         <form onSubmit={handleSubmit} noValidate>
           <div className={classes.main}>
             <Card className={classes.card}>
-              <div className={classes.avatar}>
+              <div
+                className={classes.avatar}
+                onClick={onEasterEggClick}
+                style={{ cursor: config.isDebug ? 'pointer' : 'default' }}
+              >
                 <img src={Logo} className={classes.icon} alt={'logo'} />
               </div>
               <div className={classes.systemName}>
@@ -387,7 +393,11 @@ const FormSignUp = ({ loading, handleSubmit, validate }) => {
         <form onSubmit={handleSubmit} noValidate>
           <div className={classes.main}>
             <Card className={classes.card}>
-              <div className={classes.avatar}>
+              <div
+                className={classes.avatar}
+                onClick={onEasterEggClick}
+                style={{ cursor: config.isDebug ? 'pointer' : 'default' }}
+              >
                 <img src={Logo} className={classes.icon} alt={'logo'} />
               </div>
               <div className={classes.welcome}>

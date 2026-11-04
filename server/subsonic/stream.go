@@ -29,12 +29,28 @@ func (api *Router) Stream(w http.ResponseWriter, r *http.Request) (*responses.Su
 	format, _ := p.String("format")
 	timeOffset := p.IntOr("timeOffset", 0)
 
-	mf, err := api.ds.MediaFile().Get(ctx, id)
-	if err != nil {
-		return nil, err
+	var mf *model.MediaFile
+	if strings.HasPrefix(id, "online:") {
+		mf, _ = api.ds.MediaFile().Get(ctx, id)
+		if mf == nil {
+			source, songID, ok := musicengine.ParseUniversalID(id)
+			if ok {
+				mf = &model.MediaFile{
+					ID:   id,
+					Path: musicengine.BuildProtocolPath(source, songID, musicengine.QualityFlac),
+					Size: 30 * 1024 * 1024,
+				}
+			}
+		}
+	} else {
+		var err error
+		mf, err = api.ds.MediaFile().Get(ctx, id)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	if strings.HasPrefix(mf.Path, "online://") {
+	if mf != nil && strings.HasPrefix(mf.Path, "online://") {
 		source, songID, quality, ok := musicengine.ParseProtocolPath(mf.Path)
 		if !ok {
 			source, songID, ok = musicengine.ParseUniversalID(mf.ID)

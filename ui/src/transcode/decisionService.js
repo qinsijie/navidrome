@@ -36,6 +36,7 @@ export function createDecisionService(fetchFn) {
   }
 
   async function getDecision(songId, browserProfile) {
+    if (songId && songId.startsWith('online:')) return null
     const profile = browserProfile || currentProfile
     if (!profile) return null
 
@@ -54,6 +55,7 @@ export function createDecisionService(fetchFn) {
     if (!profile) return
 
     const uncached = songIds.filter((id) => {
+      if (id && id.startsWith('online:')) return false
       const entry = cache.get(id)
       return !entry || !isFresh(entry)
     })
@@ -83,6 +85,9 @@ export function createDecisionService(fetchFn) {
   }
 
   async function resolveStreamUrl(songId) {
+    if (songId && songId.startsWith('online:')) {
+      return baseUrl(subsonic.streamUrl(songId))
+    }
     const decision = await getDecision(songId)
     if (!decision?.transcodeParams) {
       return baseUrl(subsonic.streamUrl(songId))

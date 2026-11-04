@@ -89,7 +89,10 @@ const Player = () => {
     const currentIdx = state.savedPlayIndex || 0
     const trackIds = state.queue
       .slice(currentIdx, currentIdx + 4)
-      .filter((item) => !item.isRadio && item.trackId)
+      .filter(
+        (item) =>
+          !item.isRadio && item.trackId && !item.trackId.startsWith('online:'),
+      )
       .map((item) => item.trackId)
 
     if (trackIds.length === 0) {
@@ -119,7 +122,10 @@ const Player = () => {
     const currentIdx = playerState.savedPlayIndex || 0
     const nextSongIds = playerState.queue
       .slice(currentIdx + 1, currentIdx + 4)
-      .filter((item) => !item.isRadio)
+      .filter(
+        (item) =>
+          !item.isRadio && item.trackId && !item.trackId.startsWith('online:'),
+      )
       .map((item) => item.trackId)
 
     if (nextSongIds.length > 0) {
@@ -781,7 +787,12 @@ const Player = () => {
       if (currentIdx >= 0) {
         const nextSongIds = playerState.queue
           .slice(currentIdx + 1, currentIdx + 4)
-          .filter((item) => !item.isRadio)
+          .filter(
+            (item) =>
+              !item.isRadio &&
+              item.trackId &&
+              !item.trackId.startsWith('online:'),
+          )
           .map((item) => item.trackId)
         if (nextSongIds.length > 0) {
           decisionService.prefetchDecisions(nextSongIds)

@@ -309,6 +309,10 @@ func (api *Router) GetTranscodeDecision(w http.ResponseWriter, r *http.Request) 
 			"maxBitRate", maxBitRate, "client", clientInfo.Name)
 	}
 
+	if strings.HasPrefix(mediaID, "online:") {
+		return nil, newError(responses.ErrorGeneric, "online media does not use transcoding")
+	}
+
 	// Get media file
 	mf, err := api.ds.MediaFile().Get(ctx, mediaID)
 	if err != nil {

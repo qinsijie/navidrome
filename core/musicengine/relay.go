@@ -45,7 +45,12 @@ func NewStreamRelay(stream *ResolvedStream, initialOffset int64, defaultEstimate
 	return &StreamRelay{
 		stream:       stream,
 		buffer:       NewSlabRingBuffer(initialOffset),
-		client:       &http.Client{Timeout: 60 * time.Second},
+		client: &http.Client{
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 30 * time.Second,
+				IdleConnTimeout:        90 * time.Second,
+			},
+		},
 		totalSize:    0,
 		currOffset:   initialOffset,
 		estimatedLen: defaultEstimatedLen,

@@ -15,6 +15,7 @@ import (
 	"github.com/navidrome/navidrome/conf/mime"
 	"github.com/navidrome/navidrome/consts"
 	"github.com/navidrome/navidrome/core/quickconnect"
+	"github.com/navidrome/navidrome/core/stream"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
 	"github.com/navidrome/navidrome/utils/slice"
@@ -84,6 +85,7 @@ func serveIndex(ds model.DataStore, fs fs.FS, shareInfo *model.Share) http.Handl
 			"enableInspect":             conf.Server.Inspect.Enabled,
 			"pluginsEnabled":            conf.Server.Plugins.Enabled,
 			"extAuthLogoutURL":          conf.Server.ExtAuth.LogoutURL,
+			"isDebug":                   stream.IsStreamDebug,
 		}
 		if strings.HasPrefix(conf.Server.UILoginBackgroundURL, "/") {
 			appConfig["loginBackgroundURL"] = path.Join(conf.Server.BasePath, conf.Server.UILoginBackgroundURL)
