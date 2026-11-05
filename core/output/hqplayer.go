@@ -176,11 +176,11 @@ func (c *HQPlayerClient) PlayRawStream(ctx context.Context, cfg HQPlayerConfig, 
 	}
 
 	// 5. Transport mount delay: allow HQPE's HTTP reader to finish probing audio format headers (HEAD/Range)
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 
-	// 6. Trigger <Play/> with retry logic for transient "Empty transport"
+	// 6. Trigger <Play/> with retry logic for transient "Empty transport" while HQPE probes audio headers
 	var playResp string
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 12; attempt++ {
 		playResp, err = sendCmd("<Play/>")
 		if err == nil && strings.Contains(playResp, `result="OK"`) {
 			break

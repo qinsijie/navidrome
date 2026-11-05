@@ -50,7 +50,7 @@ func NewPacedResponseWriter(ctx context.Context, w http.ResponseWriter, targetBy
 		targetBytesPerSec = 220 * 1024
 	}
 	if burstBytes <= 0 {
-		burstBytes = 384 * 1024 // 384 KB initial burst for instant header parsing
+		burstBytes = 1024 * 1024 // 1 MB initial burst for instant header parsing and transport priming
 	}
 	flusher, _ := w.(http.Flusher)
 	return &PacedResponseWriter{

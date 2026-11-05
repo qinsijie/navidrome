@@ -117,7 +117,7 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 					return
 				}
 				pacingRate := stream.CalculateAudioPacingRate(int64(mf.Size), mf.Duration, mf.Suffix)
-				pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 384*1024)
+				pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 1024*1024)
 				relay.ServeHTTP(pw, r)
 				return
 			}
@@ -192,7 +192,7 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 			)
 		}
 
-		pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 384*1024)
+		pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 1024*1024)
 		http.ServeContent(pw, r, fi.Name(), fi.ModTime(), f)
 	}
 
@@ -434,6 +434,14 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 
 		user, _ := request.UserFrom(r.Context())
 		if targetChannel == "remote" {
+			if targetDev != "" && targetDev != string(output.DeviceTypeLocal) {
+				if mgr.GetActiveDevice() != targetDev {
+					_ = mgr.SetActiveDevice(targetDev)
+				}
+				if mgr.GetSession() != nil {
+					mgr.GetSession().SetDeviceID(targetDev)
+				}
+			}
 			if req.AutoPlay && (targetDev == "hqplayer" || mgr.GetActiveDevice() == "hqplayer") {
 				canAccess, owner := mgr.CheckHQPlayerAccess(user.ID, user.UserName, req.ForceTakeover)
 				if !canAccess {

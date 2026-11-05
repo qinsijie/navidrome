@@ -40,6 +40,27 @@
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
+    <!-- Audio Element & Media URL Interceptor -->
+    <script>
+      (function() {
+        var SILENT_AUDIO_URI = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+        try {
+          var desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+          if (desc && desc.set) {
+            var origSet = desc.set;
+            Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+              get: desc.get,
+              set: function(val) {
+                if (!val || val === window.location.href || val === window.location.origin + '/app/' || (typeof val === 'string' && val.endsWith('/app/'))) {
+                  return origSet.call(this, SILENT_AUDIO_URI);
+                }
+                return origSet.call(this, val);
+              }
+            });
+          }
+        } catch(e) {}
+      })();
+    </script>
     <!-- vConsole Top-Level Static Bootstrap -->
     <script src="/vconsole.min.js"></script>
     <script>
@@ -50,18 +71,76 @@
           var h = window.location.hash || '';
           isDebug = s.indexOf('debug') !== -1 || h.indexOf('debug') !== -1 || localStorage.getItem('nd_debug') === '1' || localStorage.getItem('debug') === '1';
         } catch(e) {}
+        function initDraggableVConsole() {
+          if (!window.vConsoleInstance) {
+            window.vConsoleInstance = new window.VConsole({ theme: 'dark' });
+            console.log('[vConsole] Top-level static instance initialized');
+          }
+          // Enable desktop mouse dragging and adjust default position so it never blocks bottom player controls
+          var checkAttempts = 0;
+          var pollTimer = setInterval(function() {
+            checkAttempts++;
+            var switchEl = document.querySelector('.vc-switch');
+            if (switchEl) {
+              clearInterval(pollTimer);
+              switchEl.style.bottom = '110px';
+              switchEl.style.right = '20px';
+
+              var isDragging = false, startX = 0, startY = 0, initialLeft = 0, initialTop = 0;
+              switchEl.addEventListener('mousedown', function(e) {
+                if (e.button !== 0) return;
+                isDragging = false;
+                startX = e.clientX;
+                startY = e.clientY;
+                var rect = switchEl.getBoundingClientRect();
+                initialLeft = rect.left;
+                initialTop = rect.top;
+
+                function onMouseMove(moveEvent) {
+                  var dx = moveEvent.clientX - startX;
+                  var dy = moveEvent.clientY - startY;
+                  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+                    isDragging = true;
+                  }
+                  if (isDragging) {
+                    var newX = Math.max(0, Math.min(window.innerWidth - switchEl.offsetWidth, initialLeft + dx));
+                    var newY = Math.max(0, Math.min(window.innerHeight - switchEl.offsetHeight, initialTop + dy));
+                    switchEl.style.left = newX + 'px';
+                    switchEl.style.top = newY + 'px';
+                    switchEl.style.right = 'auto';
+                    switchEl.style.bottom = 'auto';
+                  }
+                }
+
+                function onMouseUp(upEvent) {
+                  document.removeEventListener('mousemove', onMouseMove);
+                  document.removeEventListener('mouseup', onMouseUp);
+                  if (isDragging) {
+                    upEvent.stopPropagation();
+                  }
+                }
+
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+              });
+            } else if (checkAttempts > 30) {
+              clearInterval(pollTimer);
+            }
+          }, 200);
+        }
+
         if (isDebug && window.VConsole) {
           try { localStorage.setItem('nd_debug', '1'); } catch(e) {}
-          window.vConsoleInstance = new window.VConsole({ theme: 'dark' });
-          console.log('[vConsole] Top-level static instance initialized');
+          initDraggableVConsole();
         }
         window.addEventListener('touchstart', function(e) {
           if (e.touches && e.touches.length >= 3) {
-            if (window.VConsole && !window.vConsoleInstance) {
-              try { localStorage.setItem('nd_debug', '1'); } catch(e) {}
-              window.vConsoleInstance = new window.VConsole({ theme: 'dark' });
-            } else if (window.vConsoleInstance) {
-              window.vConsoleInstance.show();
+            try { localStorage.setItem('nd_debug', '1'); } catch(e) {}
+            if (window.VConsole) {
+              initDraggableVConsole();
+              if (window.vConsoleInstance) {
+                window.vConsoleInstance.show();
+              }
             }
           }
         }, { passive: true });

@@ -145,6 +145,7 @@ const Player = () => {
     currentIndex: -1,
   })
   const lastSyncedQueueKeyRef = useRef('')
+  const isSyntheticEventRef = useRef(false)
 
   currentTrackIdRef.current = currentTrackId
 
@@ -228,16 +229,10 @@ const Player = () => {
       const queue = channelData.queue || []
       if (!Array.isArray(queue) || queue.length === 0) return
 
-      // When playing locally and client already has an active queue, do not overwrite unless forced
-      const isLocal = activeOutputDeviceRef.current === 'local'
       const currentQueue = playerStateRef.current?.queue || []
-      if (isLocal && currentQueue.length > 0 && !force) {
-        return
-      }
-
       const serverQueueKey = queue.map((t) => t.trackId).join(',')
       const localQueueKey = currentQueue.map((t) => t.trackId).join(',')
-      if (serverQueueKey && serverQueueKey !== localQueueKey) {
+      if (serverQueueKey && (serverQueueKey !== localQueueKey || force)) {
         const mappedList = queue.map((t) => ({
           trackId: t.trackId,
           uuid: t.trackId,
@@ -345,13 +340,15 @@ const Player = () => {
           setCurrentTrackId(trackId)
         }
 
-        // 5. Update play/pause icon in UI
+        // 5. Update play/pause icon in UI without triggering onAudioPlay / onAudioPause network storm
         if (audioInstance) {
+          isSyntheticEventRef.current = true
           if (remoteData.state === 'playing') {
             audioInstance.dispatchEvent(new Event('play'))
           } else {
             audioInstance.dispatchEvent(new Event('pause'))
           }
+          isSyntheticEventRef.current = false
         }
         setHeartbeatTrackId(null)
       } else {
@@ -361,16 +358,13 @@ const Player = () => {
 
         const localData = serverState.local || serverState
 
-        // 1. Synchronize local queue only if this local client is currently empty
+        // 1. Synchronize local queue from server local channel
         if (
           localData.queue &&
           Array.isArray(localData.queue) &&
           localData.queue.length > 0
         ) {
-          const localQueueLen = (playerStateRef.current?.queue || []).length
-          if (localQueueLen === 0) {
-            syncChannelQueueToRedux(localData)
-          }
+          syncChannelQueueToRedux(localData)
         }
 
         // 2. Synchronize local audio playback
@@ -497,17 +491,14 @@ const Player = () => {
           })
           .catch(() => {})
       } else {
-        // Switching to local: only fetch if local queue is currently empty
-        const localQueueLen = (playerStateRef.current?.queue || []).length
-        if (localQueueLen === 0) {
-          httpClient('/api/output/queue?channel=local')
-            .then(({ json }) => {
-              if (json && (playerStateRef.current?.queue || []).length === 0) {
-                syncChannelQueueToRedux(json)
-              }
-            })
-            .catch(() => {})
-        }
+        // Switching to local: fetch local channel queue and mirror
+        httpClient('/api/output/queue?channel=local')
+          .then(({ json }) => {
+            if (json) {
+              syncChannelQueueToRedux(json, true)
+            }
+          })
+          .catch(() => {})
       }
     }
     window.addEventListener('nd:output-device-changed', handleDeviceChanged)
@@ -654,9 +645,13 @@ const Player = () => {
   useEffect(() => {
     if (!playerState.queue || !playerState.queue.length) return
 
+    const isRemote = activeOutputDeviceRef.current !== 'local'
+    const targetChannel = isRemote ? 'remote' : 'local'
+    const targetDevice = isRemote ? activeOutputDeviceRef.current : 'local'
+
     const currentIdx =
       playerState.playIndex ?? playerState.savedPlayIndex ?? 0
-    const queueKey = `${playerState.queue.map((t) => t.trackId).join(',')}_${currentIdx}_${playerState.mode}`
+    const queueKey = `${targetChannel}_${targetDevice}_${playerState.queue.map((t) => t.trackId).join(',')}_${currentIdx}_${playerState.mode}`
     if (lastSyncedQueueKeyRef.current === queueKey) return
     lastSyncedQueueKeyRef.current = queueKey
 
@@ -669,9 +664,6 @@ const Player = () => {
       streamUrl: `/api/output/stream/${item.trackId}`,
     }))
 
-    const isRemote = activeOutputDeviceRef.current !== 'local'
-    const targetChannel = isRemote ? 'remote' : 'local'
-    const targetDevice = isRemote ? activeOutputDeviceRef.current : 'local'
     const isPlaying =
       audioInstance && !audioInstance.paused && !audioInstance.ended
     const shouldAutoPlay = Boolean(
@@ -709,6 +701,7 @@ const Player = () => {
     }
     sendQueue(false)
   }, [
+    activeOutputDevice,
     playerState.queue,
     playerState.playIndex,
     playerState.mode,
@@ -731,13 +724,15 @@ const Player = () => {
               remoteProgressRef.current.trackId = json.track?.trackId || null
               remoteProgressRef.current.currentIndex = json.currentIndex ?? -1
 
-              // Synchronize play/pause button icon with server state
+              // Synchronize play/pause button icon with server state without triggering onAudioPlay / onAudioPause network storm
               if (audioInstance) {
+                isSyntheticEventRef.current = true
                 if (isServerPlaying) {
                   audioInstance.dispatchEvent(new Event('play'))
                 } else {
                   audioInstance.dispatchEvent(new Event('pause'))
                 }
+                isSyntheticEventRef.current = false
               }
 
               // When server switches to another track, update Redux state so UI updates
@@ -1091,6 +1086,10 @@ const Player = () => {
 
   const onAudioPlay = useCallback(
     (info) => {
+      if (isSyntheticEventRef.current) {
+        return
+      }
+
       if (context && context.state !== 'running') {
         context.resume()
       }
@@ -1223,24 +1222,29 @@ const Player = () => {
   const onAudioPause = useCallback(
     (info) => {
       dispatch(currentPlaying(info))
+      if (isSyntheticEventRef.current) {
+        return
+      }
+
       // When remote output is active:
       // STRICT GUARD: If tab is hidden/minimized/in background, or screen is sleeping,
       // the pause event is a synthetic browser power-saving throttling event, NOT a user intent!
       // Do NOT send pause to remote hardware in background!
       if (activeOutputDeviceRef.current !== 'local' && !info.isPlaceholder) {
+        const wasPlaying = remoteProgressRef.current.playing
         const elapsed = remoteProgressRef.current.baseClientTime > 0
           ? (Date.now() - remoteProgressRef.current.baseClientTime) / 1000
           : 0
         remoteProgressRef.current.baseSec += Math.max(0, elapsed)
         remoteProgressRef.current.baseClientTime = Date.now()
         remoteProgressRef.current.playing = false
-        if (!document.hidden && !isHiddenRef.current) {
+        if (wasPlaying && !document.hidden && !isHiddenRef.current) {
           httpClient('/api/output/control', {
             method: 'POST',
             body: JSON.stringify({
               channel: 'remote',
               deviceId: activeOutputDeviceRef.current,
-              action: 'stop',
+              action: 'pause',
             }),
           }).catch(() => {})
         }
