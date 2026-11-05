@@ -40,6 +40,33 @@
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
+    <!-- vConsole Top-Level Static Bootstrap -->
+    <script src="/vconsole.min.js"></script>
+    <script>
+      (function() {
+        var isDebug = false;
+        try {
+          var s = window.location.search || '';
+          var h = window.location.hash || '';
+          isDebug = s.indexOf('debug') !== -1 || h.indexOf('debug') !== -1 || localStorage.getItem('nd_debug') === '1' || localStorage.getItem('debug') === '1';
+        } catch(e) {}
+        if (isDebug && window.VConsole) {
+          try { localStorage.setItem('nd_debug', '1'); } catch(e) {}
+          window.vConsoleInstance = new window.VConsole({ theme: 'dark' });
+          console.log('[vConsole] Top-level static instance initialized');
+        }
+        window.addEventListener('touchstart', function(e) {
+          if (e.touches && e.touches.length >= 3) {
+            if (window.VConsole && !window.vConsoleInstance) {
+              try { localStorage.setItem('nd_debug', '1'); } catch(e) {}
+              window.vConsoleInstance = new window.VConsole({ theme: 'dark' });
+            } else if (window.vConsoleInstance) {
+              window.vConsoleInstance.show();
+            }
+          }
+        }, { passive: true });
+      })();
+    </script>
     <div id="root"></div>
     <!--
       This HTML file is a template.

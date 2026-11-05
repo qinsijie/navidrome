@@ -39,7 +39,6 @@ import ActivityPanel from './ActivityPanel'
 import NowPlayingPanel from './NowPlayingPanel'
 import UserMenu from './UserMenu'
 import config from '../config'
-import { useEasterEggVConsole } from '../utils/vconsole'
 
 const useStyles = makeStyles(
   (theme) => ({
@@ -244,13 +243,11 @@ const CustomUserMenu = ({ onClick, ...rest }) => {
 
 const AppBar = (props) => {
   const classes = useStyles(props)
-  const onTitleClick = useEasterEggVConsole()
   return (
     <RAAppBar
       {...props}
       container={Fragment}
       userMenu={<CustomUserMenu />}
-      onClick={onTitleClick}
     >
       <NavBackButton />
       <Typography
@@ -258,7 +255,6 @@ const AppBar = (props) => {
         color="inherit"
         className={classes.title}
         id="react-admin-title"
-        style={{ cursor: config.isDebug ? 'pointer' : 'default' }}
       />
     </RAAppBar>
   )

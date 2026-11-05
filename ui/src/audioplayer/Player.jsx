@@ -38,6 +38,61 @@ import { detectBrowserProfile, decisionService } from '../transcode'
 import { httpClient, clientUniqueId } from '../dataProvider'
 import HQPlayerTakeoverDialog from './HQPlayerTakeoverDialog'
 
+class PlayerErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('[PlayerErrorBoundary] Captured player error:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            background: 'rgba(50, 10, 10, 0.95)',
+            color: '#ff8888',
+            padding: '8px 16px',
+            zIndex: 99999,
+            fontSize: '12px',
+            fontFamily: 'monospace',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
+          <span>播放器渲染受阻: {String(this.state.error?.message || this.state.error)}</span>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            style={{
+              background: '#552222',
+              color: '#fff',
+              border: 'none',
+              padding: '4px 8px',
+              borderRadius: '4px',
+              cursor: 'pointer',
+            }}
+          >
+            重试
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 const Player = () => {
   const theme = useCurrentTheme()
   const translate = useTranslate()
@@ -1562,17 +1617,11 @@ const Player = () => {
   }, [audioInstance])
 
   const playerContent = (
-    <ThemeProvider theme={createMuiTheme(theme)}>
-      <ReactJkMusicPlayer
-        key={
-          playerState.queue.length > 0
-            ? playerState.queue[0]?.trackId
-              ? 'player-has-queue'
-              : 'player-idle'
-            : 'player-empty'
-        }
-        {...options}
-        className={classes.player}
+    <PlayerErrorBoundary>
+      <ThemeProvider theme={createMuiTheme(theme)}>
+        <ReactJkMusicPlayer
+          {...options}
+          className={classes.player}
         onAudioListsChange={onAudioListsChange}
         onAudioVolumeChange={onAudioVolumeChange}
         onAudioProgress={onAudioProgress}
@@ -1628,6 +1677,7 @@ const Player = () => {
         occupiedBy={occupiedBy}
       />
     </ThemeProvider>
+    </PlayerErrorBoundary>
   )
 
   if (typeof document !== 'undefined' && document.body) {

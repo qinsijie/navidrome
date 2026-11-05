@@ -1,6 +1,9 @@
 import config from '../config'
 
 export const baseUrl = (path) => {
+  if (!path || typeof path !== 'string') {
+    return ''
+  }
   const base = config.baseURL || ''
   const parts = [base]
   parts.push(path.replace(/^\//, ''))
@@ -8,6 +11,9 @@ export const baseUrl = (path) => {
 }
 
 export const shareUrl = (path) => {
+  if (!path || typeof path !== 'string') {
+    return ''
+  }
   if (config.shareURL !== '') {
     const base = config.shareURL || ''
     const parts = [base]
