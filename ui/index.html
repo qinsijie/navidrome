@@ -65,6 +65,16 @@
             }
           }
         }, { passive: true });
+        window.addEventListener('unhandledrejection', function(event) {
+          if (
+            event.reason &&
+            (event.reason.name === 'AbortError' ||
+              String(event.reason.message || event.reason).indexOf('abort') !== -1 ||
+              event.reason.name === 'NotSupportedError')
+          ) {
+            event.preventDefault();
+          }
+        });
       })();
     </script>
     <div id="root"></div>

@@ -93,6 +93,9 @@ class PlayerErrorBoundary extends React.Component {
   }
 }
 
+const SILENT_AUDIO_URI =
+  'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
+
 const Player = () => {
   const theme = useCurrentTheme()
   const translate = useTranslate()
@@ -100,27 +103,48 @@ const Player = () => {
   const dataProvider = useDataProvider()
   const playerState = useSelector((state) => state.player)
   const dispatch = useDispatch()
-  const [currentTrackId, setCurrentTrackId] = useState(null)
-  const [heartbeatTrackId, setHeartbeatTrackId] = useState(null)
-  const lastPositionMsRef = useRef(0)
-  const currentTrackIdRef = useRef(null)
-  const stoppedRef = useRef(false)
-  const isUserPausedRef = useRef(false)
-  const [audioInstance, setAudioInstance] = useState(null)
-  const audioInstanceRef = useRef(null)
-  audioInstanceRef.current = audioInstance
+  const { authenticated } = useAuthState()
   const isDesktop = useMediaQuery('(min-width:810px)')
   const isMobilePlayer =
     /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
       navigator.userAgent,
     )
 
-  const { authenticated } = useAuthState()
+  // 1. All State declarations at the very top
+  const [currentTrackId, setCurrentTrackId] = useState(null)
+  const [heartbeatTrackId, setHeartbeatTrackId] = useState(null)
+  const [audioInstance, setAudioInstance] = useState(null)
+  const [activeOutputDevice, setActiveOutputDevice] = useState('local')
+  const [takeoverDialogOpen, setTakeoverDialogOpen] = useState(false)
+  const [occupiedBy, setOccupiedBy] = useState(null)
+  const [context, setContext] = useState(null)
+  const [gainNode, setGainNode] = useState(null)
 
-  // Keep a ref to playerState so the mount effect can read the latest value
-  // without re-triggering on every queue/position change
+  // 2. All Ref declarations at the very top (strictly before any effect/interval/callback to prevent TDZ)
+  const lastPositionMsRef = useRef(0)
+  const currentTrackIdRef = useRef(null)
+  const stoppedRef = useRef(false)
+  const isUserPausedRef = useRef(false)
+  const audioInstanceRef = useRef(null)
+  audioInstanceRef.current = audioInstance
   const playerStateRef = useRef(playerState)
   playerStateRef.current = playerState
+  const activeOutputDeviceRef = useRef(activeOutputDevice)
+  activeOutputDeviceRef.current = activeOutputDevice
+  const activeDeviceNameRef = useRef('HQPlayer')
+  const isQueueOpenRef = useRef(false)
+  const isHiddenRef = useRef(false)
+  const pendingTakeoverActionRef = useRef(null)
+  const virtualSecRef = useRef(0)
+  const remoteProgressRef = useRef({
+    baseSec: 0,
+    baseClientTime: 0,
+    playing: false,
+    duration: 0,
+    trackId: null,
+    currentIndex: -1,
+  })
+  const lastSyncedQueueKeyRef = useRef('')
 
   currentTrackIdRef.current = currentTrackId
 
@@ -197,15 +221,6 @@ const Player = () => {
       decisionService.prefetchDecisions(nextSongIds)
     }
   }, [playerState.queue, playerState.savedPlayIndex])
-
-  const [activeOutputDevice, setActiveOutputDevice] = useState('local')
-  const activeOutputDeviceRef = useRef(activeOutputDevice)
-  activeOutputDeviceRef.current = activeOutputDevice
-  const activeDeviceNameRef = useRef('HQPlayer')
-  const isQueueOpenRef = useRef(false)
-  const [takeoverDialogOpen, setTakeoverDialogOpen] = useState(false)
-  const [occupiedBy, setOccupiedBy] = useState(null)
-  const pendingTakeoverActionRef = useRef(null)
 
   const syncChannelQueueToRedux = useCallback(
     (channelData, force = false) => {
@@ -526,8 +541,6 @@ const Player = () => {
     }
   }, [])
 
-  const isHiddenRef = useRef(false)
-
   // Decouple remote output from browser lifecycle: handle tab visibility and window focus
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -556,19 +569,8 @@ const Player = () => {
     }
   }, [])
 
-  const virtualSecRef = useRef(0)
-  const remoteProgressRef = useRef({
-    baseSec: 0,
-    baseClientTime: 0,
-    playing: false,
-    duration: 0,
-    trackId: null,
-    currentIndex: -1,
-  })
-
   // Local Audio Playback Trigger & State Watcher
-  // Solves the issue where ReactJkMusicPlayer skips calling audio.play() on track change / 0===0 collision,
-  // or where async musicSrc resolution delays <audio src> assignment.
+  // Solves the issue where ReactJkMusicPlayer skips calling audio.play() on track change / 0===0 collision
   useEffect(() => {
     if (!audioInstance) return
 
@@ -591,6 +593,7 @@ const Player = () => {
         !src ||
         src === window.location.href ||
         src.endsWith('/') ||
+        src.startsWith('data:') ||
         src.includes('placeholder')
       ) {
         return
@@ -605,33 +608,26 @@ const Player = () => {
               // Started successfully
             })
             .catch((err) => {
-              console.error(`[LocalAudio] Play Rejected (${reason}):`, err)
+              if (
+                err &&
+                (err.name === 'AbortError' || err.name === 'NotSupportedError')
+              ) {
+                return
+              }
+              console.warn(`[LocalAudio] Play deferred (${reason}):`, err)
             })
         }
       }
     }
 
-    // 1. If audioInstance's src attribute changes (via React updating <audio src={musicSrc}>), trigger play
-    const observer = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        if (m.type === 'attributes' && m.attributeName === 'src') {
-          playSafe('src-mutation')
-        }
-      }
-    })
-    observer.observe(audioInstance, {
-      attributes: true,
-      attributeFilter: ['src'],
-    })
-
-    // 2. Browser media events: canplay, loadedmetadata
+    // 1. Browser media events: canplay, loadedmetadata
     const handleMediaReady = () => {
       playSafe('media-ready')
     }
     audioInstance.addEventListener('canplay', handleMediaReady)
     audioInstance.addEventListener('loadedmetadata', handleMediaReady)
 
-    // 3. User initiated track selection or queue reset
+    // 2. User initiated track selection or queue reset
     const hasQueue = (playerState.queue || []).length > 0
     const shouldPlay =
       hasQueue &&
@@ -644,7 +640,6 @@ const Player = () => {
     }
 
     return () => {
-      observer.disconnect()
       audioInstance.removeEventListener('canplay', handleMediaReady)
       audioInstance.removeEventListener('loadedmetadata', handleMediaReady)
     }
@@ -656,8 +651,6 @@ const Player = () => {
     playerState.clear,
     playerState.autoPlay,
   ])
-
-  const lastSyncedQueueKeyRef = useRef('')
   useEffect(() => {
     if (!playerState.queue || !playerState.queue.length) return
 
@@ -854,7 +847,7 @@ const Player = () => {
         name: 'Navidrome 就绪',
         singer: '等待播放曲目',
         cover: '/app-icon.png',
-        musicSrc: '',
+        musicSrc: SILENT_AUDIO_URI,
         isPlaceholder: true,
       },
     ],
@@ -870,8 +863,6 @@ const Player = () => {
     (state) => state.settings.notifications || false,
   )
   const gainInfo = useSelector((state) => state.replayGain)
-  const [context, setContext] = useState(null)
-  const [gainNode, setGainNode] = useState(null)
 
   useEffect(() => {
     if (
@@ -1003,10 +994,16 @@ const Player = () => {
       audioLists: hasQueue
         ? playerState.queue.map((item) => {
             const dur = formatDurationSec(item.duration || item.song?.duration)
-            const rawSinger = item.song?.artist || (typeof item.singer === 'string' ? item.singer.split(' · ')[0] : '') || '未知歌手'
+            const rawSinger =
+              item.song?.artist ||
+              (typeof item.singer === 'string'
+                ? item.singer.split(' · ')[0]
+                : '') ||
+              '未知歌手'
             return {
               ...item,
               singer: dur ? `${rawSinger} · ${dur}` : rawSinger,
+              musicSrc: item.musicSrc || SILENT_AUDIO_URI,
             }
           })
         : placeholderTracks,

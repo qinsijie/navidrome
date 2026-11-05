@@ -33,7 +33,10 @@ const pad = (value) => {
 }
 
 const makeMusicSrc = (trackId) => {
-  if (trackId && trackId.startsWith('online:')) {
+  if (!trackId) {
+    return 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
+  }
+  if (trackId.startsWith('online:')) {
     return subsonic.streamUrl(trackId)
   }
   if (!decisionService.getProfile()) {
