@@ -136,15 +136,18 @@ func clientUniqueIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		clientUniqueId := r.Header.Get(consts.UIClientUniqueIDHeader)
+		if clientUniqueId == "" {
+			clientUniqueId = r.URL.Query().Get("clientUniqueId")
+		}
 
-		// If clientUniqueId is found in the header, set it as a cookie
+		// If clientUniqueId is found in the header or query, set it as a cookie
 		if clientUniqueId != "" {
 			c := &http.Cookie{
 				Name:     consts.UIClientUniqueIDHeader,
 				Value:    clientUniqueId,
 				MaxAge:   consts.CookieExpiry,
 				HttpOnly: true,
-				Secure:   true,
+				Secure:   r.TLS != nil,
 				SameSite: http.SameSiteStrictMode,
 				Path:     cmp.Or(conf.Server.BasePath, "/"),
 			}

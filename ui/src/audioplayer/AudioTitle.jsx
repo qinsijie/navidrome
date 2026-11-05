@@ -13,21 +13,22 @@ const AudioTitle = React.memo(({ audioInfo, gainInfo, isMobile }) => {
   const className = classes.audioTitle
   const isDesktop = useMediaQuery('(min-width:810px)')
 
-  const song = audioInfo.song
+  const song = audioInfo?.song
+  const songId = song?.id || audioInfo?.trackId
   const [, dragSongRef] = useDrag(
     () => ({
       type: DraggableTypes.SONG,
-      item: { ids: [song?.id] },
+      item: { ids: songId ? [songId] : [] },
       options: { dropEffect: 'copy' },
     }),
-    [song],
+    [songId],
   )
 
-  if (!song) {
+  if (!song || (!song.id && !song.title)) {
     return (
       <span className={classes.songInfo}>
-        <span className={classes.songTitle}>{audioInfo.name || 'Navidrome 就绪'}</span>
-        {audioInfo.singer && <span className={classes.songAlbum}> - {audioInfo.singer}</span>}
+        <span className={classes.songTitle}>{audioInfo?.name || 'Navidrome 就绪'}</span>
+        {audioInfo?.singer && <span className={classes.songAlbum}> - {audioInfo.singer}</span>}
       </span>
     )
   }
@@ -41,7 +42,8 @@ const AudioTitle = React.memo(({ audioInfo, gainInfo, isMobile }) => {
     rgTrackPeak: song.rgTrackPeak,
   }
 
-  const decision = decisionService.getCachedDecision(audioInfo.trackId)
+  const trackId = audioInfo?.trackId || song.id
+  const decision = trackId ? decisionService.getCachedDecision(trackId) : null
   const transcodeProps = decision
     ? {
         transcodeStream: decision.transcodeStream || null,
@@ -50,18 +52,22 @@ const AudioTitle = React.memo(({ audioInfo, gainInfo, isMobile }) => {
     : {}
 
   const subtitle = song.tags?.['subtitle']
-  const title = song.title + (subtitle ? ` (${subtitle})` : '')
+  const displayTitle = (song.title || audioInfo?.name || '未知曲目') + (subtitle ? ` (${subtitle})` : '')
+  const displayArtist = song.artist || audioInfo?.singer || ''
+  const displayAlbum = song.album || ''
 
-  const linkTo = audioInfo.isRadio
-    ? `/radio/${audioInfo.trackId}/show`
+  const linkTo = audioInfo?.isRadio
+    ? `/radio/${trackId}/show`
     : song.playlistId
       ? `/playlist/${song.playlistId}/show`
-      : `/album/${song.albumId}/show`
+      : song.albumId
+        ? `/album/${song.albumId}/show`
+        : '#'
 
-  return (
-    <Link to={linkTo} className={className} ref={dragSongRef}>
+  const titleContent = (
+    <>
       <span>
-        <span className={clsx(classes.songTitle, 'songTitle')}>{title}</span>
+        <span className={clsx(classes.songTitle, 'songTitle')}>{displayTitle}</span>
         {isDesktop && (
           <QualityInfo
             record={qi}
@@ -73,21 +79,40 @@ const AudioTitle = React.memo(({ audioInfo, gainInfo, isMobile }) => {
       </span>
       {isMobile ? (
         <>
-          <span className={classes.songInfo}>
-            <span className={'songArtist'}>{song.artist}</span>
-          </span>
-          <span className={clsx(classes.songInfo, classes.songAlbum)}>
-            <span className={'songAlbum'}>{song.album}</span>
-            {song.year ? ` - ${song.year}` : ''}
-          </span>
+          {displayArtist && (
+            <span className={classes.songInfo}>
+              <span className={'songArtist'}>{displayArtist}</span>
+            </span>
+          )}
+          {displayAlbum && (
+            <span className={clsx(classes.songInfo, classes.songAlbum)}>
+              <span className={'songAlbum'}>{displayAlbum}</span>
+              {song.year ? ` - ${song.year}` : ''}
+            </span>
+          )}
         </>
       ) : (
         <span className={classes.songInfo}>
-          <span className={'songArtist'}>{song.artist}</span> -{' '}
-          <span className={'songAlbum'}>{song.album}</span>
+          {displayArtist && <span className={'songArtist'}>{displayArtist}</span>}
+          {displayArtist && displayAlbum && ' - '}
+          {displayAlbum && <span className={'songAlbum'}>{displayAlbum}</span>}
           {song.year ? ` - ${song.year}` : ''}
         </span>
       )}
+    </>
+  )
+
+  if (linkTo === '#') {
+    return (
+      <span className={className} ref={dragSongRef}>
+        {titleContent}
+      </span>
+    )
+  }
+
+  return (
+    <Link to={linkTo} className={className} ref={dragSongRef}>
+      {titleContent}
     </Link>
   )
 })

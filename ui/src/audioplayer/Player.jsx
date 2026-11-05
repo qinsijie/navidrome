@@ -52,6 +52,8 @@ const Player = () => {
   const stoppedRef = useRef(false)
   const isUserPausedRef = useRef(false)
   const [audioInstance, setAudioInstance] = useState(null)
+  const audioInstanceRef = useRef(null)
+  audioInstanceRef.current = audioInstance
   const isDesktop = useMediaQuery('(min-width:810px)')
   const isMobilePlayer =
     /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
@@ -151,15 +153,20 @@ const Player = () => {
   const pendingTakeoverActionRef = useRef(null)
 
   const syncChannelQueueToRedux = useCallback(
-    (channelData) => {
+    (channelData, force = false) => {
       if (!channelData) return
       const queue = channelData.queue || []
       if (!Array.isArray(queue) || queue.length === 0) return
 
+      // When playing locally and client already has an active queue, do not overwrite unless forced
+      const isLocal = activeOutputDeviceRef.current === 'local'
+      const currentQueue = playerStateRef.current?.queue || []
+      if (isLocal && currentQueue.length > 0 && !force) {
+        return
+      }
+
       const serverQueueKey = queue.map((t) => t.trackId).join(',')
-      const localQueueKey = (playerStateRef.current?.queue || [])
-        .map((t) => t.trackId)
-        .join(',')
+      const localQueueKey = currentQueue.map((t) => t.trackId).join(',')
       if (serverQueueKey && serverQueueKey !== localQueueKey) {
         const mappedList = queue.map((t) => ({
           trackId: t.trackId,
@@ -183,6 +190,7 @@ const Player = () => {
             ? channelData.currentIndex
             : 0
         dispatch(syncQueue(mappedList[targetIdx], mappedList))
+        dispatch(currentPlaying(mappedList[targetIdx]))
       }
     },
     [dispatch],
@@ -283,13 +291,16 @@ const Player = () => {
 
         const localData = serverState.local || serverState
 
-        // 1. Synchronize local queue if changed by another local client of this user
+        // 1. Synchronize local queue only if this local client is currently empty
         if (
           localData.queue &&
           Array.isArray(localData.queue) &&
           localData.queue.length > 0
         ) {
-          syncChannelQueueToRedux(localData)
+          const localQueueLen = (playerStateRef.current?.queue || []).length
+          if (localQueueLen === 0) {
+            syncChannelQueueToRedux(localData)
+          }
         }
 
         // 2. Synchronize local audio playback
@@ -404,33 +415,36 @@ const Player = () => {
       const isNowRemote = newId !== 'local'
       if (isNowRemote) {
         // Pausing local audio when switching to remote controller
-        if (audioInstance && !audioInstance.paused) {
-          audioInstance.pause()
+        if (audioInstanceRef.current && !audioInstanceRef.current.paused) {
+          audioInstanceRef.current.pause()
         }
         // Fetch remote channel queue and mirror
         httpClient('/api/output/queue?channel=remote')
           .then(({ json }) => {
             if (json) {
-              syncChannelQueueToRedux(json)
+              syncChannelQueueToRedux(json, true)
             }
           })
           .catch(() => {})
       } else {
-        // Fetch local channel queue
-        httpClient('/api/output/queue?channel=local')
-          .then(({ json }) => {
-            if (json) {
-              syncChannelQueueToRedux(json)
-            }
-          })
-          .catch(() => {})
+        // Switching to local: only fetch if local queue is currently empty
+        const localQueueLen = (playerStateRef.current?.queue || []).length
+        if (localQueueLen === 0) {
+          httpClient('/api/output/queue?channel=local')
+            .then(({ json }) => {
+              if (json && (playerStateRef.current?.queue || []).length === 0) {
+                syncChannelQueueToRedux(json)
+              }
+            })
+            .catch(() => {})
+        }
       }
     }
     window.addEventListener('nd:output-device-changed', handleDeviceChanged)
     return () => {
       window.removeEventListener('nd:output-device-changed', handleDeviceChanged)
     }
-  }, [dispatch, syncChannelQueueToRedux, audioInstance])
+  }, [dispatch, syncChannelQueueToRedux])
 
   const ensureStatusPill = useCallback((timeEl, isRemote, deviceName, stateText) => {
     if (!timeEl || !timeEl.parentElement) return
@@ -869,7 +883,7 @@ const Player = () => {
       autoPlay:
         hasQueue &&
         playerState.autoPlay !== false &&
-        (playerState.clear || playerState.playIndex === 0),
+        (playerState.clear || playerState.playIndex != null || playerState.playIndex === 0),
       clearPriorAudioLists: playerState.clear,
       extendsContent: (
         <PlayerToolbar id={current.trackId} isRadio={current.isRadio} />
@@ -1021,8 +1035,10 @@ const Player = () => {
       }
 
       if (info.duration) {
-        const song = info.song
-        document.title = `${song.title} - ${song.artist} - Navidrome`
+        const song = info.song || {}
+        const sTitle = song.title || info.name || ''
+        const sArtist = song.artist || info.singer || ''
+        document.title = `${sTitle} - ${sArtist} - Navidrome`
         if (!info.isRadio) {
           const posMs = Math.floor(info.currentTime * 1000)
           lastPositionMsRef.current = posMs
@@ -1047,13 +1063,13 @@ const Player = () => {
           ReactGA.event({
             category: 'Player',
             action: 'Play song',
-            label: `${song.title} - ${song.artist}`,
+            label: `${sTitle} - ${sArtist}`,
           })
         }
         if (showNotifications) {
           sendNotification(
-            song.title,
-            `${song.artist} - ${song.album}`,
+            sTitle,
+            `${sArtist} - ${song.album || ''}`,
             info.cover,
           )
         }
