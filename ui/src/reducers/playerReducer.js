@@ -36,12 +36,19 @@ const makeMusicSrc = (trackId) => {
   if (trackId && trackId.startsWith('online:')) {
     return subsonic.streamUrl(trackId)
   }
-  return decisionService.getProfile()
-    ? () =>
-        decisionService
-          .resolveStreamUrl(trackId)
-          .catch(() => subsonic.streamUrl(trackId))
-    : subsonic.streamUrl(trackId)
+  if (!decisionService.getProfile()) {
+    return subsonic.streamUrl(trackId)
+  }
+  const cached = decisionService.getCachedDecision(trackId)
+  if (cached) {
+    return cached.transcodeParams
+      ? decisionService.buildStreamUrl(trackId, cached.transcodeParams)
+      : subsonic.streamUrl(trackId)
+  }
+  return () =>
+    decisionService
+      .resolveStreamUrl(trackId)
+      .catch(() => subsonic.streamUrl(trackId))
 }
 
 const mapToAudioLists = (item) => {

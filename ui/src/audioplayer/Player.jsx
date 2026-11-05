@@ -511,21 +511,96 @@ const Player = () => {
     currentIndex: -1,
   })
 
+  // Local Audio Playback Trigger & State Watcher
+  // Solves the issue where ReactJkMusicPlayer skips calling audio.play() on track change / 0===0 collision,
+  // or where async musicSrc resolution delays <audio src> assignment.
   useEffect(() => {
-    if (audioInstance) {
-      if (activeOutputDevice !== 'local') {
-        audioInstance.muted = true
-      } else {
-        if (audioInstance._origPlay) {
-          audioInstance.play = audioInstance._origPlay
-          audioInstance.pause = audioInstance._origPause
-          delete audioInstance._origPlay
-          delete audioInstance._origPause
+    if (!audioInstance) return
+
+    if (activeOutputDevice !== 'local') {
+      audioInstance.muted = true
+      return
+    }
+
+    // Local device is active: ensure audio is unmuted
+    audioInstance.muted = false
+
+    const playSafe = (reason) => {
+      if (activeOutputDeviceRef.current !== 'local') return
+      const currentQueue = playerStateRef.current?.queue || []
+      if (currentQueue.length === 0) return
+
+      const src = audioInstance.src
+      // Ensure audio has a valid media stream source, not empty, placeholder, or web page URL
+      if (
+        !src ||
+        src === window.location.href ||
+        src.endsWith('/') ||
+        src.includes('placeholder')
+      ) {
+        return
+      }
+
+      audioInstance.muted = false
+      if (audioInstance.paused) {
+        const playPromise = audioInstance.play()
+        if (playPromise && playPromise.then) {
+          playPromise
+            .then(() => {
+              // Started successfully
+            })
+            .catch((err) => {
+              console.error(`[LocalAudio] Play Rejected (${reason}):`, err)
+            })
         }
-        audioInstance.muted = false
       }
     }
-  }, [audioInstance, activeOutputDevice])
+
+    // 1. If audioInstance's src attribute changes (via React updating <audio src={musicSrc}>), trigger play
+    const observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === 'attributes' && m.attributeName === 'src') {
+          playSafe('src-mutation')
+        }
+      }
+    })
+    observer.observe(audioInstance, {
+      attributes: true,
+      attributeFilter: ['src'],
+    })
+
+    // 2. Browser media events: canplay, loadedmetadata
+    const handleMediaReady = () => {
+      playSafe('media-ready')
+    }
+    audioInstance.addEventListener('canplay', handleMediaReady)
+    audioInstance.addEventListener('loadedmetadata', handleMediaReady)
+
+    // 3. User initiated track selection or queue reset
+    const hasQueue = (playerState.queue || []).length > 0
+    const shouldPlay =
+      hasQueue &&
+      playerState.autoPlay !== false &&
+      (playerState.clear ||
+        playerState.playIndex != null ||
+        playerState.playIndex === 0)
+    if (shouldPlay) {
+      playSafe('track-state-change')
+    }
+
+    return () => {
+      observer.disconnect()
+      audioInstance.removeEventListener('canplay', handleMediaReady)
+      audioInstance.removeEventListener('loadedmetadata', handleMediaReady)
+    }
+  }, [
+    audioInstance,
+    activeOutputDevice,
+    playerState.queue,
+    playerState.playIndex,
+    playerState.clear,
+    playerState.autoPlay,
+  ])
 
   const lastSyncedQueueKeyRef = useRef('')
   useEffect(() => {
@@ -814,6 +889,7 @@ const Player = () => {
   const defaultOptions = useMemo(
     () => ({
       theme: playerTheme,
+      preload: 'auto',
       bounds: 'body',
       playMode: playerState.mode,
       mode: 'full',
@@ -1488,6 +1564,13 @@ const Player = () => {
   const playerContent = (
     <ThemeProvider theme={createMuiTheme(theme)}>
       <ReactJkMusicPlayer
+        key={
+          playerState.queue.length > 0
+            ? playerState.queue[0]?.trackId
+              ? 'player-has-queue'
+              : 'player-idle'
+            : 'player-empty'
+        }
         {...options}
         className={classes.player}
         onAudioListsChange={onAudioListsChange}
