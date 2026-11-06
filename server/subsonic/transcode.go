@@ -431,11 +431,11 @@ func (api *Router) GetTranscodeStream(w http.ResponseWriter, r *http.Request) (*
 	}
 
 	// Create stream with concurrency limit fallback
-	stream, err := api.streamer.NewStream(ctx, mf, streamReq)
+	mediaStream, err := api.streamer.NewStream(ctx, mf, streamReq)
 	if err != nil {
 		if errors.Is(err, stream.ErrTooManyTranscodes) {
 			log.Warn(ctx, "Concurrent transcode limit reached, falling back to direct stream", "mediaID", mediaID)
-			stream, err = api.streamer.NewStream(ctx, mf, stream.Request{Format: "raw"})
+			mediaStream, err = api.streamer.NewStream(ctx, mf, stream.Request{Format: "raw"})
 		}
 		if err != nil {
 			log.Error(ctx, "Error creating stream", "mediaID", mediaID, err)
@@ -446,14 +446,14 @@ func (api *Router) GetTranscodeStream(w http.ResponseWriter, r *http.Request) (*
 
 	// Make sure the stream will be closed at the end
 	defer func() {
-		if err := stream.Close(); err != nil && log.IsGreaterOrEqualTo(log.LevelDebug) {
-			log.Error("Error closing stream", "id", mediaID, "file", stream.Name(), err)
+		if err := mediaStream.Close(); err != nil && log.IsGreaterOrEqualTo(log.LevelDebug) {
+			log.Error("Error closing stream", "id", mediaID, "file", mediaStream.Name(), err)
 		}
 	}()
 
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
-	_, err = stream.Serve(ctx, w, r)
+	_, err = mediaStream.Serve(ctx, w, r)
 	if err != nil && r.Method != http.MethodHead {
 		if !errors.Is(err, context.Canceled) && ctx.Err() == nil {
 			log.Debug(ctx, "Stream serve finished with error or disconnect", "id", mediaID, err)
