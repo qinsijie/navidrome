@@ -12,28 +12,30 @@ import (
 
 // ChannelSessionState represents the playback snapshot of a single independent audio track/channel.
 type ChannelSessionState struct {
-	Channel      string          `json:"channel"`      // "local" or "remote"
-	DeviceID     string          `json:"deviceId"`     // "local", "hqplayer", or DLNA UUID
-	DeviceName   string          `json:"deviceName"`   // e.g. "本机播放", "HQPlayer - 客厅"
-	Track        TrackMetadata   `json:"track"`
-	Queue        []TrackMetadata `json:"queue"`
-	State        string          `json:"state"` // "playing", "paused", "stopped"
-	TimeOffset   float64         `json:"timeOffset"`
-	StartedAt    int64           `json:"startedAt"`
-	Epoch        uint64          `json:"epoch"`
-	PlayMode     string          `json:"playMode"`
-	CurrentIndex int             `json:"currentIndex"`
-	SourceClient string          `json:"sourceClient,omitempty"`
+	Channel        string          `json:"channel"`      // "local" or "remote"
+	DeviceID       string          `json:"deviceId"`     // "local", "hqplayer", or DLNA UUID
+	DeviceName     string          `json:"deviceName"`   // e.g. "本机播放", "HQPlayer - 客厅"
+	Track          TrackMetadata   `json:"track"`
+	Queue          []TrackMetadata `json:"queue"`
+	State          string          `json:"state"` // "playing", "paused", "stopped"
+	TimeOffset     float64         `json:"timeOffset"`
+	StartedAt      int64           `json:"startedAt"`
+	Epoch          uint64          `json:"epoch"`
+	PlayMode       string          `json:"playMode"`
+	CurrentIndex   int             `json:"currentIndex"`
+	SourceClient   string          `json:"sourceClient,omitempty"`
+	ActiveClientID string          `json:"activeClientId,omitempty"`
 }
 
 // DualSessionState represents the complete dual-track state (Local + Remote) of a user session.
 type DualSessionState struct {
-	UserID       string              `json:"userId"`
-	UserName     string              `json:"userName"`
-	ActiveEvent  string              `json:"activeEvent"` // "local" or "remote" (which channel triggered the update)
-	Local        ChannelSessionState `json:"local"`
-	Remote       ChannelSessionState `json:"remote"`
-	SourceClient string              `json:"sourceClient,omitempty"`
+	UserID         string              `json:"userId"`
+	UserName       string              `json:"userName"`
+	ActiveEvent    string              `json:"activeEvent"` // "local" or "remote" (which channel triggered the update)
+	Local          ChannelSessionState `json:"local"`
+	Remote         ChannelSessionState `json:"remote"`
+	SourceClient   string              `json:"sourceClient,omitempty"`
+	ActiveClientID string              `json:"activeClientId,omitempty"`
 
 	// Backward compatibility top-level fields for legacy callers
 	Track        TrackMetadata   `json:"track"`
@@ -53,17 +55,18 @@ type UserSessionState = DualSessionState
 type StateBroadcaster func(ctx context.Context, username string, state DualSessionState)
 
 type channelData struct {
-	channel      string
-	deviceID     string
-	deviceName   string
-	queue        []TrackMetadata
-	currentIndex int
-	currentTrack TrackMetadata
-	state        string // "playing", "paused", "stopped"
-	timeOffset   float64
-	startedAt    int64
-	epoch        uint64
-	playMode     string
+	channel        string
+	deviceID       string
+	deviceName     string
+	queue          []TrackMetadata
+	currentIndex   int
+	currentTrack   TrackMetadata
+	state          string // "playing", "paused", "stopped"
+	timeOffset     float64
+	startedAt      int64
+	epoch          uint64
+	playMode       string
+	activeClientID string
 }
 
 func (c *channelData) snapshot() ChannelSessionState {
@@ -75,17 +78,18 @@ func (c *channelData) snapshot() ChannelSessionState {
 	qCopy := make([]TrackMetadata, len(c.queue))
 	copy(qCopy, c.queue)
 	return ChannelSessionState{
-		Channel:      c.channel,
-		DeviceID:     c.deviceID,
-		DeviceName:   c.deviceName,
-		Track:        c.currentTrack,
-		Queue:        qCopy,
-		State:        c.state,
-		TimeOffset:   offset,
-		StartedAt:    c.startedAt,
-		Epoch:        c.epoch,
-		PlayMode:     c.playMode,
-		CurrentIndex: c.currentIndex,
+		Channel:        c.channel,
+		DeviceID:       c.deviceID,
+		DeviceName:     c.deviceName,
+		Track:          c.currentTrack,
+		Queue:          qCopy,
+		State:          c.state,
+		TimeOffset:     offset,
+		StartedAt:      c.startedAt,
+		Epoch:          c.epoch,
+		PlayMode:       c.playMode,
+		CurrentIndex:   c.currentIndex,
+		ActiveClientID: c.activeClientID,
 	}
 }
 
@@ -127,12 +131,13 @@ func (s *UserSession) dualSnapshotLocked(activeEvent string, sourceClient string
 	}
 
 	return DualSessionState{
-		UserID:       s.userID,
-		UserName:     s.userName,
-		ActiveEvent:  activeEvent,
-		Local:        localSnap,
-		Remote:       remoteSnap,
-		SourceClient: sourceClient,
+		UserID:         s.userID,
+		UserName:       s.userName,
+		ActiveEvent:    activeEvent,
+		Local:          localSnap,
+		Remote:         remoteSnap,
+		SourceClient:   sourceClient,
+		ActiveClientID: activeSnap.ActiveClientID,
 		// Backward compatibility top-level fields mirror active event:
 		Track:        activeSnap.Track,
 		Queue:        activeSnap.Queue,
@@ -203,9 +208,15 @@ func (s *UserSession) SetQueue(ctx context.Context, channel string, tracks []Tra
 	if autoPlay {
 		c.state = "playing"
 		c.startedAt = time.Now().UnixMilli()
+		if sourceClient != "" {
+			c.activeClientID = sourceClient
+		}
 	} else {
 		c.state = "stopped"
 		c.startedAt = 0
+		if sourceClient != "" {
+			c.activeClientID = sourceClient
+		}
 	}
 	if playMode != "" {
 		c.playMode = playMode
@@ -234,6 +245,7 @@ func (s *UserSession) ClearQueue(ctx context.Context, channel string, sourceClie
 	c.state = "stopped"
 	c.startedAt = 0
 	c.timeOffset = 0
+	c.activeClientID = ""
 
 	snap := s.dualSnapshotLocked(ch, sourceClient)
 	s.mu.Unlock()
@@ -266,6 +278,9 @@ func (s *UserSession) UpdatePlayback(ctx context.Context, channel string, state 
 		c.startedAt = time.Now().UnixMilli()
 	} else {
 		c.startedAt = 0
+	}
+	if sourceClient != "" {
+		c.activeClientID = sourceClient
 	}
 	if playMode != "" {
 		c.playMode = playMode

@@ -146,13 +146,7 @@ const Player = () => {
   })
   const lastSyncedQueueKeyRef = useRef('')
   const isSyntheticEventRef = useRef(false)
-  const localPlayerSnapshotRef = useRef({
-    queue: [],
-    playIndex: 0,
-    current: null,
-    currentTime: 0,
-    paused: true,
-  })
+  const activeEmitterIdRef = useRef(clientUniqueId)
 
   currentTrackIdRef.current = currentTrackId
 
@@ -299,7 +293,9 @@ const Player = () => {
 
         // 1. Local HTML5 audio element must be silent/paused
         if (audioInstance && !audioInstance.paused) {
+          isSyntheticEventRef.current = true
           audioInstance.pause()
+          isSyntheticEventRef.current = false
         }
 
         // 2. Synchronize remote queue if changed
@@ -359,11 +355,79 @@ const Player = () => {
         }
         setHeartbeatTrackId(null)
       } else {
-        // Current client is in Local Mode (Local Terminal Autonomy)
-        // STRICT TERMINAL AUTONOMY RULE:
-        // Do NOT execute cross-client audio triggers (.play()) or queue overwrites!
-        // Local audio playback and queue are strictly controlled by this terminal's own user.
-        return
+        // Current client is in Local Mode (Local Terminal)
+        // Discard remote events in local mode
+        if (eventChannel === 'remote') return
+
+        const localData = serverState.local || serverState
+        const emitterId = localData.activeClientId || serverState.activeClientId
+        if (emitterId) {
+          activeEmitterIdRef.current = emitterId
+        }
+        const isCurrentEmitter = !emitterId || emitterId === clientUniqueId
+
+        // 1. Single-Emitter Rule: If this client is NOT the emitter, keep local <audio> silent & paused
+        if (!isCurrentEmitter) {
+          if (audioInstance && !audioInstance.paused) {
+            isSyntheticEventRef.current = true
+            audioInstance.pause()
+            isSyntheticEventRef.current = false
+          }
+          setHeartbeatTrackId(null)
+        }
+
+        // 2. Synchronize queue from server (Single Source of Truth across all devices)
+        if (
+          localData.queue &&
+          Array.isArray(localData.queue) &&
+          localData.queue.length > 0
+        ) {
+          syncChannelQueueToRedux(localData)
+        }
+
+        // 3. Synchronize current track
+        const trackId = localData.trackId || localData.track?.trackId
+        if (trackId && playerStateRef.current?.current?.trackId !== trackId) {
+          const track = localData.track || localData
+          const currentObj = {
+            trackId,
+            uuid: trackId,
+            name: track.title,
+            singer: track.artist,
+            duration: track.duration,
+            cover: subsonic.getCoverArtUrl({ id: trackId }, 300),
+            song: {
+              id: trackId,
+              title: track.title,
+              artist: track.artist,
+              album: track.album,
+              duration: track.duration,
+            },
+          }
+          dispatch(currentPlaying(currentObj))
+          currentTrackIdRef.current = trackId
+          setCurrentTrackId(trackId)
+        }
+
+        // 4. Update play/pause icon in UI via synthetic event (no network loop)
+        if (audioInstance) {
+          isSyntheticEventRef.current = true
+          if (localData.state === 'playing') {
+            audioInstance.dispatchEvent(new Event('play'))
+          } else {
+            audioInstance.dispatchEvent(new Event('pause'))
+          }
+          isSyntheticEventRef.current = false
+        }
+
+        // 5. Align progress indicator if observer
+        if (!isCurrentEmitter && audioInstance && localData.timeOffset >= 0) {
+          if (Math.abs((audioInstance.currentTime || 0) - (localData.timeOffset || 0)) > 3) {
+            try {
+              audioInstance.currentTime = localData.timeOffset || 0
+            } catch (e) {}
+          }
+        }
       }
     }
 
@@ -371,7 +435,7 @@ const Player = () => {
     return () => {
       window.removeEventListener('nd:user-playback-state', handleUserPlaybackState)
     }
-  }, [audioInstance])
+  }, [audioInstance, syncChannelQueueToRedux, dispatch])
 
   // Listen to popstate so mobile back gesture closes queue panel without leaving page
   useEffect(() => {
@@ -432,22 +496,15 @@ const Player = () => {
       }
       const isNowRemote = newId !== 'local'
       if (isNowRemote) {
-        // 1. Save local terminal state before switching to remote controller
-        localPlayerSnapshotRef.current = {
-          queue: playerStateRef.current?.queue ? [...playerStateRef.current.queue] : [],
-          playIndex: playerStateRef.current?.playIndex ?? playerStateRef.current?.savedPlayIndex ?? 0,
-          current: playerStateRef.current?.current ? { ...playerStateRef.current.current } : null,
-          currentTime: audioInstanceRef.current ? (audioInstanceRef.current.currentTime || 0) : 0,
-          paused: audioInstanceRef.current ? audioInstanceRef.current.paused : true,
-        }
-
-        // 2. Pause and mute local audio instance
+        // 1. Pause and mute local audio instance
         if (audioInstanceRef.current) {
+          isSyntheticEventRef.current = true
           audioInstanceRef.current.pause()
           audioInstanceRef.current.muted = true
+          isSyntheticEventRef.current = false
         }
 
-        // 3. Clear temporary local UI and fetch fresh remote queue
+        // 2. Fetch fresh remote queue from server
         dispatch(syncQueue(null, []))
         httpClient('/api/output/queue?channel=remote')
           .then(({ json }) => {
@@ -457,7 +514,7 @@ const Player = () => {
           })
           .catch(() => {})
 
-        // 4. Fetch latest remote playback status
+        // 3. Fetch latest remote playback status
         httpClient('/api/output/status')
           .then(({ json }) => {
             if (json) {
@@ -491,41 +548,20 @@ const Player = () => {
           currentIndex: -1,
         }
 
-        // 2. Restore saved local terminal snapshot
-        const snap = localPlayerSnapshotRef.current
-        if (snap && snap.queue && snap.queue.length > 0) {
-          dispatch(syncQueue(snap.current, snap.queue))
-          if (snap.current) {
-            dispatch(currentPlaying(snap.current))
-          }
-          if (audioInstanceRef.current) {
-            audioInstanceRef.current.muted = false
-            try {
-              audioInstanceRef.current.currentTime = snap.currentTime || 0
-            } catch (err) {}
-            isSyntheticEventRef.current = true
-            if (snap.paused) {
-              audioInstanceRef.current.dispatchEvent(new Event('pause'))
-            } else {
-              audioInstanceRef.current.dispatchEvent(new Event('play'))
-            }
-            isSyntheticEventRef.current = false
-          }
-        } else {
-          // If no local snapshot in memory, fetch local queue from server
-          httpClient('/api/output/queue?channel=local')
-            .then(({ json }) => {
-              if (json && json.queue && json.queue.length > 0) {
-                syncChannelQueueToRedux(json, true)
-              } else {
-                dispatch(syncQueue(null, []))
-              }
-            })
-            .catch(() => {})
-          if (audioInstanceRef.current) {
-            audioInstanceRef.current.muted = false
-          }
+        if (audioInstanceRef.current) {
+          audioInstanceRef.current.muted = false
         }
+
+        // 2. Fetch latest local queue from server (Single Source of Truth)
+        httpClient('/api/output/queue?channel=local')
+          .then(({ json }) => {
+            if (json && json.queue && json.queue.length > 0) {
+              syncChannelQueueToRedux(json, true)
+            } else {
+              dispatch(syncQueue(null, []))
+            }
+          })
+          .catch(() => {})
       }
     }
     window.addEventListener('nd:output-device-changed', handleDeviceChanged)
@@ -602,6 +638,13 @@ const Player = () => {
 
     const playSafe = (reason) => {
       if (activeOutputDeviceRef.current !== 'local') return
+      // Single-Emitter Guard: Observer terminals must NEVER call audio.play()
+      if (
+        activeEmitterIdRef.current &&
+        activeEmitterIdRef.current !== clientUniqueId
+      ) {
+        return
+      }
       const currentQueue = playerStateRef.current?.queue || []
       if (currentQueue.length === 0) return
 
@@ -688,6 +731,9 @@ const Player = () => {
     )
 
     const sendQueue = (forceTakeover = false) => {
+      if (targetChannel === 'local' && shouldAutoPlay) {
+        activeEmitterIdRef.current = clientUniqueId
+      }
       httpClient('/api/output/queue', {
         method: 'POST',
         body: JSON.stringify({
@@ -1176,6 +1222,17 @@ const Player = () => {
             sendPlay(false)
           }
         }
+      } else if (!info.isPlaceholder) {
+        activeEmitterIdRef.current = clientUniqueId
+        httpClient('/api/output/control', {
+          method: 'POST',
+          body: JSON.stringify({
+            channel: 'local',
+            deviceId: 'local',
+            action: 'play',
+            timeOffset: info.currentTime && info.currentTime >= 1.0 ? info.currentTime : 0,
+          }),
+        }).catch(() => {})
       }
 
       if (info.duration) {
@@ -1274,6 +1331,15 @@ const Player = () => {
         const posMs = Math.floor(info.currentTime * 1000)
         lastPositionMsRef.current = posMs
         subsonic.reportPlayback(currentTrackId, posMs, 'paused')
+        httpClient('/api/output/control', {
+          method: 'POST',
+          body: JSON.stringify({
+            channel: 'local',
+            deviceId: 'local',
+            action: 'pause',
+            timeOffset: info.currentTime && info.currentTime >= 1.0 ? info.currentTime : 0,
+          }),
+        }).catch(() => {})
       }
       setHeartbeatTrackId(null)
     },

@@ -84,8 +84,9 @@ type UserPlaybackState struct {
 	OutputTarget string  `json:"outputTarget"`
 	PlayMode     string  `json:"playMode"`
 	CurrentIndex int     `json:"currentIndex"`
-	SourceClient string  `json:"sourceClient,omitempty"`
-	Queue        any     `json:"queue,omitempty"`
+	SourceClient   string  `json:"sourceClient,omitempty"`
+	ActiveClientID string  `json:"activeClientId,omitempty"`
+	Queue          any     `json:"queue,omitempty"`
 	Channel      string  `json:"channel,omitempty"`     // "local" or "remote"
 	ActiveEvent  string  `json:"activeEvent,omitempty"` // "local" or "remote"
 	Local        any     `json:"local,omitempty"`       // ChannelSessionState
