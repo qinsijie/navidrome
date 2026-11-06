@@ -23,12 +23,15 @@ const newEventStream = async () => {
 
 let eventStream
 let reconnectTimer
-const RECONNECT_DELAY = 5000
+let reconnectDelay = 1000
+let consecutiveErrors = 0
 
 const setupHandlers = (stream, dispatchFn) => {
   stream.onopen = () => {
     // eslint-disable-next-line no-console
     console.log('EventStream connected')
+    reconnectDelay = 1000
+    consecutiveErrors = 0
     dispatchFn(streamReconnected())
   }
 
@@ -48,34 +51,46 @@ const setupHandlers = (stream, dispatchFn) => {
   }
   stream.addEventListener('keepAlive', eventHandler(dispatchFn))
   stream.onerror = (e) => {
-    // eslint-disable-next-line no-console
-    console.log('EventStream error', e)
-    dispatchFn(serverDown())
-    if (stream) stream.close()
+    consecutiveErrors++
+    if (consecutiveErrors <= 2) {
+      // eslint-disable-next-line no-console
+      console.log('EventStream connection issue, reconnecting...', e)
+    }
+    // Only mark server as down if connection failed multiple times consecutively
+    if (consecutiveErrors >= 3) {
+      dispatchFn(serverDown())
+    }
+    if (stream) {
+      stream.close()
+    }
     scheduleReconnect(dispatchFn)
   }
 }
 
 const scheduleReconnect = (dispatchFn) => {
   if (!reconnectTimer) {
+    const delay = reconnectDelay
+    reconnectDelay = Math.min(10000, Math.floor(reconnectDelay * 1.5))
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
       connect(dispatchFn)
-    }, RECONNECT_DELAY)
+    }, delay)
   }
 }
 
 const connect = async (dispatchFn) => {
   try {
+    if (eventStream) {
+      eventStream.close()
+      eventStream = null
+    }
     const stream = await newEventStream()
     eventStream = stream
     setupHandlers(stream, dispatchFn)
-    // Dispatch reconnection event to refresh critical data
-    dispatchFn(streamReconnected())
     return stream
   } catch (e) {
     // eslint-disable-next-line no-console
-    console.log(`Error connecting to server:`, e)
+    console.log(`Error connecting to EventStream:`, e)
     scheduleReconnect(dispatchFn)
   }
 }
@@ -159,10 +174,7 @@ const startEventStream = async (dispatchFn) => {
     return Promise.resolve()
   }
   setupRecoveryListeners(dispatchFn)
-  if (config.devNewEventStream !== false) {
-    return startEventStreamNew(dispatchFn)
-  }
-  return startEventStreamLegacy(dispatchFn)
+  return startEventStreamNew(dispatchFn)
 }
 
 export { startEventStream }

@@ -44,6 +44,14 @@
     <script>
       (function() {
         var SILENT_AUDIO_URI = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+        function isInvalidAudioSrc(val) {
+          if (!val || typeof val !== 'string') return true;
+          var trimmed = val.trim();
+          if (trimmed === '' || trimmed === '#' || trimmed === '/' || trimmed === '/app/' || trimmed.endsWith('/app/')) return true;
+          if (trimmed === window.location.href || trimmed === window.location.origin + '/app/') return true;
+          return false;
+        }
+
         try {
           var desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
           if (desc && desc.set) {
@@ -51,13 +59,25 @@
             Object.defineProperty(HTMLMediaElement.prototype, 'src', {
               get: desc.get,
               set: function(val) {
-                if (!val || val === window.location.href || val === window.location.origin + '/app/' || (typeof val === 'string' && val.endsWith('/app/'))) {
+                if (isInvalidAudioSrc(val)) {
                   return origSet.call(this, SILENT_AUDIO_URI);
                 }
                 return origSet.call(this, val);
               }
             });
           }
+        } catch(e) {}
+
+        try {
+          var origSetAttr = Element.prototype.setAttribute;
+          Element.prototype.setAttribute = function(name, val) {
+            if (this instanceof HTMLMediaElement && typeof name === 'string' && name.toLowerCase() === 'src') {
+              if (isInvalidAudioSrc(val)) {
+                return origSetAttr.call(this, name, SILENT_AUDIO_URI);
+              }
+            }
+            return origSetAttr.call(this, name, val);
+          };
         } catch(e) {}
       })();
     </script>

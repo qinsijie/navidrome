@@ -24,9 +24,7 @@ type Broker interface {
 
 const (
 	keepAliveFrequency = 15 * time.Second
-	// The timeout must be higher than the keepAliveFrequency, or the lack of activity will cause the channel to close.
-	writeTimeOut = keepAliveFrequency + 5*time.Second
-	bufferSize   = 1
+	bufferSize         = 64
 )
 
 type (
@@ -66,11 +64,11 @@ type broker struct {
 
 func GetBroker() Broker {
 	return singleton.GetInstance(func() *broker {
-		// Instantiate a broker
+		// Instantiate a broker with expanded buffers for high-frequency multi-device events
 		broker := &broker{
-			publish:       make(messageChan, 2),
-			subscribing:   make(clientsChan, 1),
-			unsubscribing: make(clientsChan, 1),
+			publish:       make(messageChan, 64),
+			subscribing:   make(clientsChan, 16),
+			unsubscribing: make(clientsChan, 16),
 		}
 
 		// Set it running - listening and broadcasting events
@@ -87,7 +85,11 @@ func (b *broker) SendBroadcastMessage(ctx context.Context, evt Event) {
 func (b *broker) SendMessage(ctx context.Context, evt Event) {
 	msg := b.prepareMessage(ctx, evt)
 	log.Trace("Broker received new event", "type", msg.event, "data", msg.data)
-	b.publish <- msg
+	select {
+	case b.publish <- msg:
+	default:
+		log.Warn("Event broker publish queue full, dropping oldest or slow event", "type", msg.event)
+	}
 }
 
 func (b *broker) prepareMessage(ctx context.Context, event Event) message {
@@ -100,11 +102,7 @@ func (b *broker) prepareMessage(ctx context.Context, event Event) message {
 
 // writeEvent writes a message to the given io.Writer, formatted as a Server-Sent Event.
 // If the writer is a http.Flusher, it flushes the data immediately instead of buffering it.
-func writeEvent(ctx context.Context, w io.Writer, event message, timeout time.Duration) error {
-	if err := setWriteTimeout(w, timeout); err != nil {
-		log.Debug(ctx, "Error setting write timeout", err)
-	}
-
+func writeEvent(ctx context.Context, w io.Writer, event message) error {
 	_, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", event.id, event.event, event.data) //nolint:gosec
 	if err != nil {
 		return err
@@ -117,25 +115,12 @@ func writeEvent(ctx context.Context, w io.Writer, event message, timeout time.Du
 	return nil
 }
 
-func setWriteTimeout(rw io.Writer, timeout time.Duration) error {
-	for {
-		switch t := rw.(type) {
-		case interface{ SetWriteDeadline(time.Time) error }:
-			return t.SetWriteDeadline(time.Now().Add(timeout))
-		case interface{ Unwrap() http.ResponseWriter }:
-			rw = t.Unwrap()
-		default:
-			return fmt.Errorf("%T - %w", rw, http.ErrNotSupported)
-		}
-	}
-}
-
 func (b *broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user, _ := request.UserFrom(ctx)
 
 	// Make sure that the writer supports flushing.
-	_, ok := w.(http.Flusher)
+	flusher, ok := w.(http.Flusher)
 	if !ok {
 		log.Error(r, "Streaming unsupported! Events cannot be sent to this client", "address", r.RemoteAddr,
 			"userAgent", r.UserAgent(), "user", user.UserName)
@@ -146,8 +131,9 @@ func (b *broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
-	// Tells Nginx to not buffer this response. See https://stackoverflow.com/a/33414096
+	// Tells Nginx/proxies to not buffer this response. See https://stackoverflow.com/a/33414096
 	w.Header().Set("X-Accel-Buffering", "no")
+	flusher.Flush()
 
 	// Each connection registers its own message channel with the Broker's connections registry
 	c := b.subscribe(r)
@@ -156,7 +142,7 @@ func (b *broker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	for event := range pl.ReadOrDone(ctx, c.msgC) {
 		log.Trace(ctx, "Sending event to client", "event", event, "client", c.String())
-		err := writeEvent(ctx, w, event, writeTimeOut)
+		err := writeEvent(ctx, w, event)
 		if err != nil {
 			log.Debug(ctx, "Error sending event to client. Closing connection", "event", event, "client", c.String(), err)
 			return

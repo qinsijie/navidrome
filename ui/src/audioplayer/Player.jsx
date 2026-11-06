@@ -247,7 +247,7 @@ const Player = () => {
           },
           singer: t.artist,
           duration: t.duration,
-          musicSrc: subsonic.streamUrl(t.trackId),
+          musicSrc: subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
           cover: subsonic.getCoverArtUrl({ id: t.trackId }, 300),
         }))
         const targetIdx =
