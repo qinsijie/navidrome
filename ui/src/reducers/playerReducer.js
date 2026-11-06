@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import subsonic from '../subsonic'
 import { decisionService } from '../transcode'
+import { sanitizeImageUrl } from '../utils'
 import {
   PLAYER_ADD_TRACKS,
   PLAYER_CLEAR_QUEUE,
@@ -101,13 +102,17 @@ const mapToAudioLists = (item) => {
     singer: item.artist,
     duration: item.duration,
     musicSrc: makeMusicSrc(trackId),
-    cover: subsonic.getCoverArtUrl(
-      {
-        id: trackId,
-        updatedAt: item.updatedAt,
-        album: item.album,
-      },
-      300,
+    cover: sanitizeImageUrl(
+      item.cover ||
+        item.coverUrl ||
+        subsonic.getCoverArtUrl(
+          {
+            id: trackId,
+            updatedAt: item.updatedAt,
+            album: item.album,
+          },
+          300,
+        ),
     ),
   }
 }

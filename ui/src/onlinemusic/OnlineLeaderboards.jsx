@@ -24,6 +24,7 @@ import PlayArrowIcon from '@material-ui/icons/PlayArrow'
 import PlaylistAddIcon from '@material-ui/icons/PlaylistAdd'
 import ArrowBackIcon from '@material-ui/icons/ArrowBack'
 import { playTracks, addTracks, openAddToPlaylist } from '../actions'
+import { sanitizeImageUrl } from '../utils'
 import { getLeaderboards, getLeaderboardDetail, ensureShadowTrack } from './api'
 import { QualityBadge, SourceBadge } from './QualityBadge'
 
@@ -275,6 +276,7 @@ export const OnlineLeaderboards = () => {
 
   const buildClientMediaFile = (track) => {
     const q = track.quality || 'flac'
+    const coverUrl = sanitizeImageUrl(track.cover || track.coverUrl || '')
     return {
       id: track.id,
       title: track.title,
@@ -282,7 +284,9 @@ export const OnlineLeaderboards = () => {
       album: track.album || '',
       duration: track.duration || 240,
       path: `online://${track.source}/${track.songId}/${q}`,
-      hasCoverArt: !!track.cover,
+      cover: coverUrl,
+      coverUrl,
+      hasCoverArt: !!coverUrl,
     }
   }
 

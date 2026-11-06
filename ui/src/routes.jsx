@@ -8,9 +8,16 @@ import {
   OnlineLeaderboards,
   SourceSettings,
 } from './onlinemusic'
+import RecentlyPlayed from './recentlyplayed'
 
 const routes = [
   <Route exact path="/personal" render={() => <Personal />} key={'personal'} />,
+  <Route
+    exact
+    path="/recently-played"
+    render={() => <RecentlyPlayed />}
+    key={'recently-played'}
+  />,
   <Route
     exact
     path="/settings/audio"

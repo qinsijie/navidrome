@@ -4,6 +4,7 @@ import clsx from 'clsx'
 import { makeStyles } from '@material-ui/core/styles'
 import config from '../config'
 import subsonic from '../subsonic'
+import { sanitizeImageUrl } from '../utils'
 import { useImageUrl } from './useImageUrl'
 import { ThumbHashCanvas } from './ThumbHashCanvas'
 
@@ -46,7 +47,10 @@ export const Artwork = ({
   onClick,
 }) => {
   const classes = useStyles()
-  const url = record ? subsonic.getCoverArtUrl(record, size, square) : ''
+  const rawUrl = record
+    ? record.coverUrl || record.cover || subsonic.getCoverArtUrl(record, size, square)
+    : ''
+  const url = sanitizeImageUrl(rawUrl)
   const { imgUrl, fromCache } = useImageUrl(url)
 
   const [decoded, setDecoded] = useState(false)

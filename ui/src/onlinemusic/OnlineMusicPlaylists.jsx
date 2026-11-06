@@ -25,6 +25,7 @@ import PlayArrowIcon from '@material-ui/icons/PlayArrow'
 import PlaylistAddIcon from '@material-ui/icons/PlaylistAdd'
 import ArrowBackIcon from '@material-ui/icons/ArrowBack'
 import { playTracks, addTracks, openAddToPlaylist } from '../actions'
+import { sanitizeImageUrl } from '../utils'
 import { getSonglists, getSonglistDetail, ensureShadowTrack } from './api'
 import { QualityBadge, SourceBadge } from './QualityBadge'
 
@@ -373,11 +374,11 @@ export const OnlineMusicPlaylists = () => {
               <Paper className={classes.detailHero} elevation={0}>
                 <img
                   className={classes.detailHeroCover}
-                  src={
+                  src={sanitizeImageUrl(
                     detailData.coverUrl ||
                     currentPlaylist.coverUrl ||
                     'https://p2.music.126.net/6y-UleORITEDbvrOLAL-vQ==/109951167667634547.jpg'
-                  }
+                  )}
                   alt="cover"
                 />
                 <div className={classes.detailHeroInfo}>
@@ -529,10 +530,10 @@ export const OnlineMusicPlaylists = () => {
                 <CardActionArea onClick={() => handleOpenPlaylist(item)}>
                   <CardMedia
                     className={classes.media}
-                    image={
+                    image={sanitizeImageUrl(
                       item.coverUrl ||
                       'https://p2.music.126.net/6y-UleORITEDbvrOLAL-vQ==/109951167667634547.jpg'
-                    }
+                    )}
                     title={item.title}
                   />
                   <CardContent>

@@ -10,6 +10,7 @@ import SearchIcon from '@material-ui/icons/Search'
 import QueueMusicIcon from '@material-ui/icons/QueueMusic'
 import EmojiEventsIcon from '@material-ui/icons/EmojiEvents'
 import SettingsEthernetIcon from '@material-ui/icons/SettingsEthernet'
+import HistoryIcon from '@material-ui/icons/History'
 import SubMenu from './SubMenu'
 import { humanize, pluralize } from 'inflection'
 import albumLists from '../album/albumLists'
@@ -199,6 +200,16 @@ const Menu = ({ dense = false }) => {
       ) : (
         resources.filter(subItems('playlist')).map(renderResourceMenuItemLink)
       )}
+      <Divider style={{ margin: '8px 0' }} />
+      <MenuItemLink
+        to="/recently-played"
+        activeClassName={classes.active}
+        primaryText="最近播放"
+        leftIcon={<HistoryIcon />}
+        sidebarIsOpen={open}
+        dense={dense}
+        exact
+      />
     </div>
   )
 }

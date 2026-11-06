@@ -28,7 +28,7 @@ import {
   syncQueue,
 } from '../actions'
 import PlayerToolbar from './PlayerToolbar'
-import { sendNotification } from '../utils'
+import { sendNotification, sanitizeImageUrl } from '../utils'
 import subsonic from '../subsonic'
 import locale from './locale'
 import { keyMap } from '../hotkeys'
@@ -147,6 +147,120 @@ const Player = () => {
   const lastSyncedQueueKeyRef = useRef('')
   const isSyntheticEventRef = useRef(false)
   const localQueueSnapshotRef = useRef(null)
+  const isUserExplicitlyPausedRef = useRef(false)
+  const silentKeepAliveRef = useRef(null)
+  const interruptionTimerRef = useRef(null)
+
+  const startSilentKeepAlive = useCallback(() => {
+    try {
+      if (!silentKeepAliveRef.current) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext
+        if (AudioCtx) {
+          const ctx = new AudioCtx()
+          const osc = ctx.createOscillator()
+          const gain = ctx.createGain()
+          gain.gain.value = 0.00001
+          osc.connect(gain)
+          gain.connect(ctx.destination)
+          osc.start()
+          silentKeepAliveRef.current = { ctx, osc, gain }
+        }
+      }
+      if (
+        silentKeepAliveRef.current?.ctx &&
+        silentKeepAliveRef.current.ctx.state === 'suspended'
+      ) {
+        silentKeepAliveRef.current.ctx.resume().catch(() => {})
+      }
+    } catch (e) {}
+  }, [])
+
+  const stopSilentKeepAlive = useCallback(() => {
+    try {
+      if (
+        silentKeepAliveRef.current?.ctx &&
+        silentKeepAliveRef.current.ctx.state === 'running'
+      ) {
+        silentKeepAliveRef.current.ctx.suspend().catch(() => {})
+      }
+    } catch (e) {}
+  }, [])
+
+  const recordRecentlyPlayed = useCallback((info) => {
+    if (!info || info.isPlaceholder) return
+    const trackId = info.trackId || info.id
+    if (!trackId) return
+
+    try {
+      const STORAGE_KEY = 'nd_recently_played_records'
+      const raw = localStorage.getItem(STORAGE_KEY)
+      let list = []
+      if (raw) {
+        try {
+          list = JSON.parse(raw)
+        } catch (e) {
+          list = []
+        }
+      }
+      if (!Array.isArray(list)) list = []
+
+      list = list.filter((t) => t.id !== trackId)
+
+      const song = info.song || {}
+      const duration = info.duration || song.duration || 0
+      const title = song.title || info.name || ''
+      const artist =
+        song.artist ||
+        (typeof info.singer === 'string'
+          ? info.singer.split(' · ')[0]
+          : '') ||
+        '未知歌手'
+      const album = song.album || ''
+      const cover = sanitizeImageUrl(
+        info.cover ||
+          song.cover ||
+          (trackId ? subsonic.getCoverArtUrl({ id: trackId }, 300) : ''),
+      )
+      const path = song.path || info.musicSrc || ''
+
+      let source = 'local'
+      let songId = ''
+      let quality = 'flac'
+      if (path.startsWith('online://')) {
+        const parts = path.replace('online://', '').split('/')
+        source = parts[0] || 'online'
+        songId = parts[1] || ''
+        quality = parts[2] || 'flac'
+      } else if (trackId.startsWith('online:')) {
+        const parts = trackId.replace('online:', '').split(':')
+        source = parts[0] || 'online'
+        songId = parts[1] || ''
+      }
+
+      const item = {
+        id: trackId,
+        songId,
+        title,
+        artist,
+        album,
+        duration,
+        cover,
+        path,
+        source,
+        quality,
+        playedAt: Date.now(),
+      }
+
+      list.unshift(item)
+      if (list.length > 200) {
+        list = list.slice(0, 200)
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(list))
+      window.dispatchEvent(
+        new CustomEvent('nd:recently-played-updated', { detail: item }),
+      )
+    } catch (e) {}
+  }, [])
 
   currentTrackIdRef.current = currentTrackId
 
@@ -248,7 +362,9 @@ const Player = () => {
           singer: t.artist,
           duration: t.duration,
           musicSrc: subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
-          cover: subsonic.getCoverArtUrl({ id: t.trackId }, 300),
+          cover: sanitizeImageUrl(
+            t.cover || t.coverUrl || subsonic.getCoverArtUrl({ id: t.trackId }, 300),
+          ),
         }))
         const targetIdx =
           channelData.currentIndex >= 0 &&
@@ -323,7 +439,9 @@ const Player = () => {
           name: track.title,
           singer: track.artist,
           duration: track.duration,
-          cover: subsonic.getCoverArtUrl({ id: trackId }, 300),
+          cover: sanitizeImageUrl(
+            track.cover || track.coverUrl || subsonic.getCoverArtUrl({ id: trackId }, 300),
+          ),
           song: {
             id: trackId,
             title: track.title,
@@ -1048,12 +1166,16 @@ const Player = () => {
         return
       }
 
+      isUserExplicitlyPausedRef.current = false
+      startSilentKeepAlive()
+
       if (context && context.state !== 'running') {
         context.resume()
       }
 
       dispatch(currentPlaying(info))
       if (info.isPlaceholder) return
+      recordRecentlyPlayed(info)
 
       // Real remote streaming dispatch: keep local audio DOM powered off and send play to server session
       if (activeOutputDeviceRef.current !== 'local') {
@@ -1179,6 +1301,8 @@ const Player = () => {
 
   const onAudioPause = useCallback(
     (info) => {
+      isUserExplicitlyPausedRef.current = true
+      stopSilentKeepAlive()
       dispatch(currentPlaying(info))
       if (isSyntheticEventRef.current) {
         return
@@ -1354,22 +1478,59 @@ const Player = () => {
 
     const handlePlay = () => {
       isUserPausedRef.current = false
+      isUserExplicitlyPausedRef.current = false
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'playing'
       }
       acquireWakeLock()
+      startSilentKeepAlive()
     }
 
     const handlePause = () => {
-      isUserPausedRef.current = true
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'paused'
       }
       releaseWakeLock()
+
+      // Hardware / wireless charging / system audio session interruption recovery:
+      // If audio was paused by external interruption without user clicking pause, auto-resume
+      if (
+        activeOutputDeviceRef.current === 'local' &&
+        !isUserExplicitlyPausedRef.current &&
+        !audioInstance.ended &&
+        currentTrackIdRef.current
+      ) {
+        if (interruptionTimerRef.current) clearTimeout(interruptionTimerRef.current)
+        interruptionTimerRef.current = setTimeout(() => {
+          if (
+            activeOutputDeviceRef.current === 'local' &&
+            !isUserExplicitlyPausedRef.current &&
+            audioInstance &&
+            audioInstance.paused &&
+            !audioInstance.ended &&
+            currentTrackIdRef.current
+          ) {
+            console.log('[LocalAudio] Auto-resuming after hardware/charging interruption...')
+            const p = audioInstance.play()
+            if (p && p.then) {
+              p.catch((err) => {
+                if (err.name !== 'AbortError') {
+                  console.log('[LocalAudio] Interruption auto-resume deferred:', err)
+                }
+              })
+            }
+          }
+        }, 500)
+      } else {
+        stopSilentKeepAlive()
+        isUserPausedRef.current = true
+      }
     }
 
     const handleEnded = () => {
       isUserPausedRef.current = false
+      isUserExplicitlyPausedRef.current = false
+      stopSilentKeepAlive()
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'none'
       }
@@ -1421,6 +1582,19 @@ const Player = () => {
     // Recover playback position on mobile Webview/tab resume if stream stalled or reset to 0
     const handleVisibilityOrResume = () => {
       if (document.visibilityState === 'visible' && audioInstance) {
+        if (
+          activeOutputDeviceRef.current === 'local' &&
+          !isUserExplicitlyPausedRef.current &&
+          audioInstance.paused &&
+          !audioInstance.ended &&
+          currentTrackIdRef.current
+        ) {
+          audioInstance.play().catch(() => {})
+        }
+        if (!audioInstance.paused) {
+          acquireWakeLock()
+          startSilentKeepAlive()
+        }
         const trackId = currentTrackIdRef.current
         let savedPosSec = (lastPositionMsRef.current || 0) / 1000
         if (savedPosSec <= 2 && trackId) {
@@ -1451,11 +1625,26 @@ const Player = () => {
 
     // Register full MediaSession action handlers
     const mediaSessionActions = [
-      ['play', () => { audioInstance.play().catch(() => {}) }],
-      ['pause', () => { audioInstance.pause() }],
+      [
+        'play',
+        () => {
+          isUserExplicitlyPausedRef.current = false
+          startSilentKeepAlive()
+          audioInstance.play().catch(() => {})
+        },
+      ],
+      [
+        'pause',
+        () => {
+          isUserExplicitlyPausedRef.current = true
+          stopSilentKeepAlive()
+          audioInstance.pause()
+        },
+      ],
       [
         'previoustrack',
         () => {
+          isUserExplicitlyPausedRef.current = false
           if (typeof audioInstance.playPrev === 'function') {
             audioInstance.playPrev()
           }
@@ -1464,6 +1653,7 @@ const Player = () => {
       [
         'nexttrack',
         () => {
+          isUserExplicitlyPausedRef.current = false
           if (typeof audioInstance.playNext === 'function') {
             audioInstance.playNext()
           }

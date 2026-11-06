@@ -17,6 +17,16 @@ var httpClient = &http.Client{
 	Timeout: 8 * time.Second,
 }
 
+func ensureHTTPS(rawURL string) string {
+	if strings.HasPrefix(rawURL, "http://") {
+		return "https://" + rawURL[7:]
+	}
+	if strings.HasPrefix(rawURL, "//") {
+		return "https:" + rawURL
+	}
+	return rawURL
+}
+
 // SearchNative queries music from upstream APIs natively
 func SearchNative(ctx context.Context, source, query string, page, limit int) (*SearchResult, error) {
 	if limit <= 0 {
@@ -219,7 +229,7 @@ func searchNetEase(ctx context.Context, query string, page, limit int) ([]*Onlin
 			Artist:       artistStr,
 			Album:        s.Album.Name,
 			Duration:     float64(s.Duration) / 1000.0,
-			CoverURL:     s.Album.PicURL,
+			CoverURL:     ensureHTTPS(s.Album.PicURL),
 			Quality:      QualityFlac,
 			Qualities:    []string{Quality128k, Quality320k, QualityFlac},
 		})
@@ -516,7 +526,7 @@ func GetSonglistDetailNative(ctx context.Context, source, id string) (*SongListD
 				detail.Title = data.Result.Name
 			}
 			detail.Desc = data.Result.Description
-			detail.CoverURL = data.Result.CoverImgURL
+			detail.CoverURL = ensureHTTPS(data.Result.CoverImgURL)
 
 			for _, t := range data.Result.Tracks {
 				var artists []string
@@ -535,7 +545,7 @@ func GetSonglistDetailNative(ctx context.Context, source, id string) (*SongListD
 					Artist:       strings.Join(artists, " / "),
 					Album:        t.Album.Name,
 					Duration:     float64(t.Duration) / 1000.0,
-					CoverURL:     t.Album.PicURL,
+					CoverURL:     ensureHTTPS(t.Album.PicURL),
 					Quality:      QualityFlac,
 					Qualities:    []string{Quality128k, Quality320k, QualityFlac},
 				})
@@ -579,7 +589,7 @@ func GetSonglistDetailNative(ctx context.Context, source, id string) (*SongListD
 				detail.Title = data.Name
 			}
 			detail.Desc = data.Info
-			detail.CoverURL = data.Pic
+			detail.CoverURL = ensureHTTPS(data.Pic)
 
 			for _, m := range data.Musiclist {
 				dur, _ := strconv.ParseFloat(m.SongDuration, 64)
@@ -639,7 +649,7 @@ func GetSonglistDetailNative(ctx context.Context, source, id string) (*SongListD
 				detail.Title = data.Info.Rankname
 			}
 			detail.Desc = data.Info.Intro
-			detail.CoverURL = strings.Replace(data.Info.Imgurl, "{size}", "400", -1)
+			detail.CoverURL = ensureHTTPS(strings.Replace(data.Info.Imgurl, "{size}", "400", -1))
 
 			for _, s := range data.Songs.List {
 				songID := s.Hash
@@ -661,7 +671,7 @@ func GetSonglistDetailNative(ctx context.Context, source, id string) (*SongListD
 					}
 					title = strings.TrimSpace(parts[1])
 				}
-				cover := strings.Replace(s.AlbumSizableCover, "{size}", "400", -1)
+				cover := ensureHTTPS(strings.Replace(s.AlbumSizableCover, "{size}", "400", -1))
 
 				detail.List = append(detail.List, &OnlineTrack{
 					UniversalID:  BuildUniversalID("kg", songID),
@@ -716,9 +726,9 @@ func GetSonglistDetailNative(ctx context.Context, source, id string) (*SongListD
 				detail.Title = data.Topinfo.ListName
 			}
 			detail.Desc = data.Topinfo.Info
-			detail.CoverURL = data.Topinfo.Pic
+			detail.CoverURL = ensureHTTPS(data.Topinfo.Pic)
 			if detail.CoverURL == "" {
-				detail.CoverURL = data.Topinfo.PicAlbum
+				detail.CoverURL = ensureHTTPS(data.Topinfo.PicAlbum)
 			}
 
 			for _, item := range data.Songlist {

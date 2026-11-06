@@ -63,3 +63,23 @@ export const isLastFmURL = (url) => {
     return false
   }
 }
+
+export const sanitizeImageUrl = (url) => {
+  if (!url || typeof url !== 'string') return ''
+  const trimmed = url.trim()
+  if (
+    trimmed === '' ||
+    trimmed === '#' ||
+    trimmed === '/' ||
+    trimmed.startsWith('data:')
+  ) {
+    return trimmed
+  }
+  if (trimmed.startsWith('//')) {
+    return 'https:' + trimmed
+  }
+  if (trimmed.startsWith('http://')) {
+    return 'https://' + trimmed.slice(7)
+  }
+  return trimmed
+}
