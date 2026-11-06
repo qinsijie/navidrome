@@ -35,7 +35,7 @@ import { keyMap } from '../hotkeys'
 import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
-import { httpClient, clientUniqueId } from '../dataProvider'
+import { httpClient } from '../dataProvider'
 import HQPlayerTakeoverDialog from './HQPlayerTakeoverDialog'
 
 class PlayerErrorBoundary extends React.Component {
@@ -146,7 +146,7 @@ const Player = () => {
   })
   const lastSyncedQueueKeyRef = useRef('')
   const isSyntheticEventRef = useRef(false)
-  const activeEmitterIdRef = useRef(clientUniqueId)
+  const localQueueSnapshotRef = useRef(null)
 
   currentTrackIdRef.current = currentTrackId
 
@@ -262,19 +262,15 @@ const Player = () => {
     [dispatch],
   )
 
-  // Listen to server UserSession SSE events for multi-device synchronized playback
+  // Listen to server UserSession SSE events for multi-device synchronized playback (Remote mode only)
   useEffect(() => {
     const handleUserPlaybackState = (e) => {
       const serverState = e.detail
       if (!serverState) return
 
-      // Echo Suppression: Ignore updates originated from this client
-      if (
-        serverState.sourceClient &&
-        serverState.sourceClient === clientUniqueId
-      ) {
-        return
-      }
+      // Scheme A: Local mode is 100% client-autonomous. Discard all server playback broadcasts.
+      const isViewingRemote = activeOutputDeviceRef.current !== 'local'
+      if (!isViewingRemote) return
 
       const eventChannel =
         serverState.channel ||
@@ -282,153 +278,76 @@ const Player = () => {
         (serverState.outputTarget && serverState.outputTarget !== 'local'
           ? 'remote'
           : 'local')
-      const isViewingRemote = activeOutputDeviceRef.current !== 'local'
 
-      if (isViewingRemote) {
-        // Current client is acting as Remote Controller (e.g. for HQPlayer)
-        // ONLY accept remote channel updates; ignore local audio updates from other clients
-        if (eventChannel !== 'remote') return
+      // Current client is acting as Remote Controller (e.g. for HQPlayer)
+      // ONLY accept remote channel updates; ignore local audio updates
+      if (eventChannel !== 'remote') return
 
-        const remoteData = serverState.remote || serverState
+      const remoteData = serverState.remote || serverState
 
-        // 1. Local HTML5 audio element must be silent/paused
-        if (audioInstance && !audioInstance.paused) {
-          isSyntheticEventRef.current = true
-          audioInstance.pause()
-          isSyntheticEventRef.current = false
-        }
-
-        // 2. Synchronize remote queue if changed
-        if (
-          remoteData.queue &&
-          Array.isArray(remoteData.queue) &&
-          remoteData.queue.length > 0
-        ) {
-          syncChannelQueueToRedux(remoteData)
-        }
-
-        // 3. Synchronize remote progress clock
-        remoteProgressRef.current.baseSec = remoteData.timeOffset || 0
-        remoteProgressRef.current.baseClientTime =
-          remoteData.startedAt > 0 ? remoteData.startedAt : Date.now()
-        remoteProgressRef.current.playing = remoteData.state === 'playing'
-        remoteProgressRef.current.duration =
-          remoteData.duration || remoteData.track?.duration || 0
-        remoteProgressRef.current.trackId =
-          remoteData.trackId || remoteData.track?.trackId || null
-        remoteProgressRef.current.currentIndex =
-          remoteData.currentIndex ?? -1
-
-        // 4. Sync Redux current track so player UI bar updates
-        const trackId = remoteProgressRef.current.trackId
-        if (trackId && playerStateRef.current?.current?.trackId !== trackId) {
-          const track = remoteData.track || remoteData
-          const currentObj = {
-            trackId,
-            uuid: trackId,
-            name: track.title,
-            singer: track.artist,
-            duration: track.duration,
-            cover: subsonic.getCoverArtUrl({ id: trackId }, 300),
-            song: {
-              id: trackId,
-              title: track.title,
-              artist: track.artist,
-              album: track.album,
-              duration: track.duration,
-            },
-          }
-          dispatch(currentPlaying(currentObj))
-          currentTrackIdRef.current = trackId
-          setCurrentTrackId(trackId)
-        }
-
-        // 5. Update play/pause icon in UI without triggering onAudioPlay / onAudioPause network storm
-        if (audioInstance) {
-          isSyntheticEventRef.current = true
-          if (remoteData.state === 'playing') {
-            audioInstance.dispatchEvent(new Event('play'))
-          } else {
-            audioInstance.dispatchEvent(new Event('pause'))
-          }
-          isSyntheticEventRef.current = false
-        }
-        setHeartbeatTrackId(null)
-      } else {
-        // Current client is in Local Mode (Local Terminal)
-        // Discard remote events in local mode
-        if (eventChannel === 'remote') return
-
-        const localData = serverState.local || serverState
-        const emitterId = localData.activeClientId || serverState.activeClientId
-        if (emitterId) {
-          activeEmitterIdRef.current = emitterId
-        }
-        const isCurrentEmitter = !emitterId || emitterId === clientUniqueId
-
-        // 1. Single-Emitter Rule: If this client is NOT the emitter, keep local <audio> silent & paused
-        if (!isCurrentEmitter) {
-          if (audioInstance && !audioInstance.paused) {
-            isSyntheticEventRef.current = true
-            audioInstance.pause()
-            isSyntheticEventRef.current = false
-          }
-          setHeartbeatTrackId(null)
-        }
-
-        // 2. Synchronize queue from server (Single Source of Truth across all devices)
-        if (
-          localData.queue &&
-          Array.isArray(localData.queue) &&
-          localData.queue.length > 0
-        ) {
-          syncChannelQueueToRedux(localData)
-        }
-
-        // 3. Synchronize current track
-        const trackId = localData.trackId || localData.track?.trackId
-        if (trackId && playerStateRef.current?.current?.trackId !== trackId) {
-          const track = localData.track || localData
-          const currentObj = {
-            trackId,
-            uuid: trackId,
-            name: track.title,
-            singer: track.artist,
-            duration: track.duration,
-            cover: subsonic.getCoverArtUrl({ id: trackId }, 300),
-            song: {
-              id: trackId,
-              title: track.title,
-              artist: track.artist,
-              album: track.album,
-              duration: track.duration,
-            },
-          }
-          dispatch(currentPlaying(currentObj))
-          currentTrackIdRef.current = trackId
-          setCurrentTrackId(trackId)
-        }
-
-        // 4. Update play/pause icon in UI via synthetic event (no network loop)
-        if (audioInstance) {
-          isSyntheticEventRef.current = true
-          if (localData.state === 'playing') {
-            audioInstance.dispatchEvent(new Event('play'))
-          } else {
-            audioInstance.dispatchEvent(new Event('pause'))
-          }
-          isSyntheticEventRef.current = false
-        }
-
-        // 5. Align progress indicator if observer
-        if (!isCurrentEmitter && audioInstance && localData.timeOffset >= 0) {
-          if (Math.abs((audioInstance.currentTime || 0) - (localData.timeOffset || 0)) > 3) {
-            try {
-              audioInstance.currentTime = localData.timeOffset || 0
-            } catch (e) {}
-          }
-        }
+      // 1. Local HTML5 audio element must be silent/paused
+      if (audioInstance && !audioInstance.paused) {
+        isSyntheticEventRef.current = true
+        audioInstance.pause()
+        isSyntheticEventRef.current = false
       }
+
+      // 2. Synchronize remote queue if changed
+      if (
+        remoteData.queue &&
+        Array.isArray(remoteData.queue) &&
+        remoteData.queue.length > 0
+      ) {
+        syncChannelQueueToRedux(remoteData)
+      }
+
+      // 3. Synchronize remote progress clock
+      remoteProgressRef.current.baseSec = remoteData.timeOffset || 0
+      remoteProgressRef.current.baseClientTime =
+        remoteData.startedAt > 0 ? remoteData.startedAt : Date.now()
+      remoteProgressRef.current.playing = remoteData.state === 'playing'
+      remoteProgressRef.current.duration =
+        remoteData.duration || remoteData.track?.duration || 0
+      remoteProgressRef.current.trackId =
+        remoteData.trackId || remoteData.track?.trackId || null
+      remoteProgressRef.current.currentIndex =
+        remoteData.currentIndex ?? -1
+
+      // 4. Sync Redux current track so player UI bar updates
+      const trackId = remoteProgressRef.current.trackId
+      if (trackId && playerStateRef.current?.current?.trackId !== trackId) {
+        const track = remoteData.track || remoteData
+        const currentObj = {
+          trackId,
+          uuid: trackId,
+          name: track.title,
+          singer: track.artist,
+          duration: track.duration,
+          cover: subsonic.getCoverArtUrl({ id: trackId }, 300),
+          song: {
+            id: trackId,
+            title: track.title,
+            artist: track.artist,
+            album: track.album,
+            duration: track.duration,
+          },
+        }
+        dispatch(currentPlaying(currentObj))
+        currentTrackIdRef.current = trackId
+        setCurrentTrackId(trackId)
+      }
+
+      // 5. Update play/pause icon in UI without triggering onAudioPlay / onAudioPause network storm
+      if (audioInstance) {
+        isSyntheticEventRef.current = true
+        if (remoteData.state === 'playing') {
+          audioInstance.dispatchEvent(new Event('play'))
+        } else {
+          audioInstance.dispatchEvent(new Event('pause'))
+        }
+        isSyntheticEventRef.current = false
+      }
+      setHeartbeatTrackId(null)
     }
 
     window.addEventListener('nd:user-playback-state', handleUserPlaybackState)
@@ -468,22 +387,6 @@ const Player = () => {
       })
       .catch(() => {})
 
-    httpClient('/api/output/queue?channel=local')
-      .then(({ json }) => {
-        if (
-          json &&
-          json.queue &&
-          Array.isArray(json.queue) &&
-          json.queue.length > 0
-        ) {
-          const localQueueLen = (playerStateRef.current?.queue || []).length
-          if (localQueueLen === 0) {
-            syncChannelQueueToRedux(json)
-          }
-        }
-      })
-      .catch(() => {})
-
     const handleDeviceChanged = (e) => {
       const newId = e.detail?.deviceId || 'local'
       const prevId = activeOutputDeviceRef.current
@@ -502,6 +405,12 @@ const Player = () => {
           audioInstanceRef.current.pause()
           audioInstanceRef.current.muted = true
           isSyntheticEventRef.current = false
+        }
+
+        // Save local queue snapshot before switching to remote view
+        localQueueSnapshotRef.current = {
+          queue: playerStateRef.current?.queue || [],
+          current: playerStateRef.current?.current || {},
         }
 
         // 2. Fetch fresh remote queue from server
@@ -552,16 +461,11 @@ const Player = () => {
           audioInstanceRef.current.muted = false
         }
 
-        // 2. Fetch latest local queue from server (Single Source of Truth)
-        httpClient('/api/output/queue?channel=local')
-          .then(({ json }) => {
-            if (json && json.queue && json.queue.length > 0) {
-              syncChannelQueueToRedux(json, true)
-            } else {
-              dispatch(syncQueue(null, []))
-            }
-          })
-          .catch(() => {})
+        // 2. Restore local queue snapshot if present (Scheme A: Local Autonomy)
+        if (localQueueSnapshotRef.current?.queue?.length > 0) {
+          const snap = localQueueSnapshotRef.current
+          dispatch(syncQueue(snap.current, snap.queue))
+        }
       }
     }
     window.addEventListener('nd:output-device-changed', handleDeviceChanged)
@@ -638,13 +542,6 @@ const Player = () => {
 
     const playSafe = (reason) => {
       if (activeOutputDeviceRef.current !== 'local') return
-      // Single-Emitter Guard: Observer terminals must NEVER call audio.play()
-      if (
-        activeEmitterIdRef.current &&
-        activeEmitterIdRef.current !== clientUniqueId
-      ) {
-        return
-      }
       const currentQueue = playerStateRef.current?.queue || []
       if (currentQueue.length === 0) return
 
@@ -703,15 +600,16 @@ const Player = () => {
     playerState.autoPlay,
   ])
   useEffect(() => {
+    // Scheme A: Local queue is completely autonomous on client, never synced to server
+    if (activeOutputDevice === 'local' || activeOutputDeviceRef.current === 'local') {
+      return
+    }
     if (!playerState.queue || !playerState.queue.length) return
 
-    const isRemote = activeOutputDeviceRef.current !== 'local'
-    const targetChannel = isRemote ? 'remote' : 'local'
-    const targetDevice = isRemote ? activeOutputDeviceRef.current : 'local'
-
+    const targetDevice = activeOutputDeviceRef.current
     const currentIdx =
       playerState.playIndex ?? playerState.savedPlayIndex ?? 0
-    const queueKey = `${targetChannel}_${targetDevice}_${playerState.queue.map((t) => t.trackId).join(',')}_${currentIdx}_${playerState.mode}`
+    const queueKey = `remote_${targetDevice}_${playerState.queue.map((t) => t.trackId).join(',')}_${currentIdx}_${playerState.mode}`
     if (lastSyncedQueueKeyRef.current === queueKey) return
     lastSyncedQueueKeyRef.current = queueKey
 
@@ -731,13 +629,10 @@ const Player = () => {
     )
 
     const sendQueue = (forceTakeover = false) => {
-      if (targetChannel === 'local' && shouldAutoPlay) {
-        activeEmitterIdRef.current = clientUniqueId
-      }
       httpClient('/api/output/queue', {
         method: 'POST',
         body: JSON.stringify({
-          channel: targetChannel,
+          channel: 'remote',
           deviceId: targetDevice,
           tracks: payloadTracks,
           startIndex: currentIdx,
@@ -1222,17 +1117,6 @@ const Player = () => {
             sendPlay(false)
           }
         }
-      } else if (!info.isPlaceholder) {
-        activeEmitterIdRef.current = clientUniqueId
-        httpClient('/api/output/control', {
-          method: 'POST',
-          body: JSON.stringify({
-            channel: 'local',
-            deviceId: 'local',
-            action: 'play',
-            timeOffset: info.currentTime && info.currentTime >= 1.0 ? info.currentTime : 0,
-          }),
-        }).catch(() => {})
       }
 
       if (info.duration) {
@@ -1331,15 +1215,6 @@ const Player = () => {
         const posMs = Math.floor(info.currentTime * 1000)
         lastPositionMsRef.current = posMs
         subsonic.reportPlayback(currentTrackId, posMs, 'paused')
-        httpClient('/api/output/control', {
-          method: 'POST',
-          body: JSON.stringify({
-            channel: 'local',
-            deviceId: 'local',
-            action: 'pause',
-            timeOffset: info.currentTime && info.currentTime >= 1.0 ? info.currentTime : 0,
-          }),
-        }).catch(() => {})
       }
       setHeartbeatTrackId(null)
     },

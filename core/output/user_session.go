@@ -323,6 +323,9 @@ func (m *UserSessionManager) SetBroadcaster(b StateBroadcaster) {
 }
 
 func (m *UserSessionManager) broadcast(ctx context.Context, username string, state DualSessionState) {
+	if state.ActiveEvent != "remote" {
+		return // Scheme A: Local playback is 100% client autonomous; only remote (HQPE/DLNA) events are broadcasted
+	}
 	m.mu.RLock()
 	b := m.broadcaster
 	m.mu.RUnlock()
