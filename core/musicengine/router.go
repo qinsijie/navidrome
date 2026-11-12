@@ -442,6 +442,11 @@ func (api *Router) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 0. Cache hit: direct disk stream with zero latency & HTTP Range support
+	if GetCacheManager().ServeCachedTrack(w, r, id) {
+		return
+	}
+
 	// 1. Resolve live stream URL
 	resolved, err := api.engine.ResolveStreamURL(r.Context(), source, songID, quality)
 	if err != nil {
@@ -451,7 +456,7 @@ func (api *Router) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Initialize StreamRelay and serve
-	relay := NewStreamRelay(resolved, 0, 30*1024*1024)
+	relay := NewStreamRelay(resolved, 0, 30*1024*1024, id)
 	defer relay.Close()
 
 	if err := relay.StartPull(r.Context(), 0); err != nil {

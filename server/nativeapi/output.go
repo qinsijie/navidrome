@@ -97,6 +97,13 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 		}
 
 		if strings.HasPrefix(mf.Path, "online://") {
+			// 0. Cache hit: direct disk stream with pacer
+			pacingRate := stream.CalculateAudioPacingRate(int64(mf.Size), mf.Duration, mf.Suffix)
+			pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 1024*1024)
+			if musicengine.GetCacheManager().ServeCachedTrack(pw, r, mf.ID) {
+				return
+			}
+
 			source, songID, quality, ok := musicengine.ParseProtocolPath(mf.Path)
 			if !ok {
 				source, songID, ok = musicengine.ParseUniversalID(mf.ID)
@@ -109,15 +116,13 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 					http.Error(w, "stream resolve error: "+err.Error(), http.StatusBadGateway)
 					return
 				}
-				relay := musicengine.NewStreamRelay(resolved, 0, int64(mf.Size))
+				relay := musicengine.NewStreamRelay(resolved, 0, int64(mf.Size), mf.ID)
 				defer relay.Close()
 				if err := relay.StartPull(r.Context(), 0); err != nil {
 					log.Error(r.Context(), "Audio Stream: Failed to connect to online audio CDN", "id", id, err)
 					http.Error(w, "stream relay pull error: "+err.Error(), http.StatusBadGateway)
 					return
 				}
-				pacingRate := stream.CalculateAudioPacingRate(int64(mf.Size), mf.Duration, mf.Suffix)
-				pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 1024*1024)
 				relay.ServeHTTP(pw, r)
 				return
 			}
@@ -375,15 +380,81 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
+	r.Get("/player/terminal-queue", func(w http.ResponseWriter, r *http.Request) {
+		clientID := r.URL.Query().Get("clientId")
+		if clientID == "" {
+			if id, ok := request.ClientUniqueIdFrom(r.Context()); ok {
+				clientID = id
+			}
+		}
+		store := output.GetTerminalStore()
+		state, found := store.Get(clientID)
+		w.Header().Set("Content-Type", "application/json")
+		if !found {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"found": false,
+				"queue": []any{},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"found":        true,
+			"clientId":     state.ClientID,
+			"clientName":   state.ClientName,
+			"queue":        state.Queue,
+			"currentIndex": state.CurrentIdx,
+			"timeOffset":   state.TimeOffset,
+			"updatedAt":    state.UpdatedAt,
+		})
+	})
+
+	r.Post("/player/terminal-queue", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ClientID   string                 `json:"clientId"`
+			ClientName string                 `json:"clientName"`
+			Queue      []output.TrackMetadata `json:"queue"`
+			CurrentIdx int                    `json:"currentIndex"`
+			TimeOffset float64                `json:"timeOffset"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.ClientID == "" {
+			if id, ok := request.ClientUniqueIdFrom(r.Context()); ok {
+				req.ClientID = id
+			}
+		}
+		if req.ClientID != "" {
+			store := output.GetTerminalStore()
+			store.Save(req.ClientID, req.ClientName, req.Queue, req.CurrentIdx, req.TimeOffset)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
 	r.Get("/output/queue", func(w http.ResponseWriter, r *http.Request) {
 		user, _ := request.UserFrom(r.Context())
 		sess := output.GetUserSessionManager().GetSession(user.ID, user.UserName)
 		channel := r.URL.Query().Get("channel")
+		deviceID := r.URL.Query().Get("deviceId")
 		w.Header().Set("Content-Type", "application/json")
-		if channel == "local" {
+		if channel == "local" || deviceID == "local" {
 			_ = json.NewEncoder(w).Encode(sess.Snapshot("local"))
-		} else if channel == "remote" {
-			_ = json.NewEncoder(w).Encode(sess.Snapshot("remote"))
+		} else if channel == "remote" || (deviceID != "" && deviceID != "local") {
+			status := mgr.GetNowPlaying()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"channel":      "remote",
+				"deviceId":     status.DeviceID,
+				"queue":        status.Queue,
+				"currentIndex": status.CurrentIndex,
+				"track":        status.Track,
+				"state":        status.State,
+				"timeOffset":   status.TimeOffset,
+				"startedAt":    status.StartedAt,
+				"epoch":        status.Epoch,
+				"playMode":     status.PlayMode,
+			})
 		} else {
 			_ = json.NewEncoder(w).Encode(sess.DualSnapshot("local", ""))
 		}

@@ -22,7 +22,7 @@ import {
 } from 'react-icons/md'
 import { useNotify } from 'react-admin'
 import { httpClient } from '../dataProvider'
-import HQPlayerTakeoverDialog from './HQPlayerTakeoverDialog'
+import { getClientName, setClientName } from '../dataProvider/httpClient'
 
 const useStyles = makeStyles((theme) => ({
   zoneBadge: {
@@ -128,9 +128,15 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
   const [devices, setDevices] = useState([])
   const [activeId, setActiveId] = useState('local')
   const [nowPlaying, setNowPlaying] = useState(null)
-  const [takeoverDialogOpen, setTakeoverDialogOpen] = useState(false)
-  const [occupiedBy, setOccupiedBy] = useState(null)
-  const [pendingDev, setPendingDev] = useState(null)
+  const [clientName, setClientNameState] = useState(getClientName())
+
+  useEffect(() => {
+    const handleNameUpdate = (e) => {
+      if (e.detail?.name) setClientNameState(e.detail.name)
+    }
+    window.addEventListener('nd:client-name-updated', handleNameUpdate)
+    return () => window.removeEventListener('nd:client-name-updated', handleNameUpdate)
+  }, [])
 
   const loadDevices = useCallback(() => {
     httpClient('/api/output/devices?enabled_only=true')
@@ -158,29 +164,20 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
     setAnchorEl(null)
   }
 
-  const doSelectDevice = (dev, forceTakeover = false) => {
+  const doSelectDevice = (dev) => {
     httpClient('/api/output/device', {
       method: 'POST',
-      body: JSON.stringify({ deviceId: dev.id, forceTakeover }),
+      body: JSON.stringify({ deviceId: dev.id }),
     })
       .then(() => {
         setActiveId(dev.id)
         window.dispatchEvent(
           new CustomEvent('nd:output-device-changed', { detail: { deviceId: dev.id, device: dev } }),
         )
-        notify(`已选择输出设备: ${dev.name} (点击播放按钮时推流)`, 'info')
-        setTakeoverDialogOpen(false)
+        notify(`已选择输出设备: ${dev.name}`, 'info')
         handleClose()
       })
       .catch((err) => {
-        if (err.status === 409 || err.body?.code === 'HQPLAYER_OCCUPIED') {
-          const occ = err.body?.occupiedBy || { userName: '其他用户', trackTitle: '外部音频流' }
-          setOccupiedBy(occ)
-          setPendingDev(dev)
-          setTakeoverDialogOpen(true)
-          handleClose()
-          return
-        }
         notify(`切换输出设备失败: ${err.message}`, 'error')
       })
   }
@@ -234,7 +231,24 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
         anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
         transformOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       >
-        <div className={classes.menuHeader}>音频输出分区 (Audio Zones)</div>
+        <div className={classes.menuHeader} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>音频输出分区 (Audio Zones)</span>
+          <span
+            style={{ fontSize: '0.75rem', fontWeight: 'normal', cursor: 'pointer', color: '#1976d2', userSelect: 'none' }}
+            title="点击修改本机设备备注名"
+            onClick={(e) => {
+              e.stopPropagation()
+              const newName = window.prompt('设置当前终端设备备注名 (如: 手机、书房电脑):', clientName)
+              if (newName && newName.trim()) {
+                setClientName(newName.trim())
+                setClientNameState(newName.trim())
+                notify(`已更新终端备注名为: ${newName.trim()}`, 'info')
+              }
+            }}
+          >
+            ✏️ {clientName}
+          </span>
+        </div>
         {devices.map((dev) => {
           const isActive = dev.id === activeId
           const isDevPlaying =
@@ -243,6 +257,7 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
             nowPlaying.deviceId === dev.id &&
             nowPlaying.track &&
             nowPlaying.track.title
+          const displayName = dev.id === 'local' && clientName ? `${dev.name} (${clientName})` : dev.name
           return (
             <MenuItem
               key={dev.id}
@@ -256,7 +271,7 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
                     variant="body2"
                     className={isActive ? classes.activeText : undefined}
                   >
-                    {dev.name}
+                    {displayName}
                   </Typography>
                 }
                 secondary={
@@ -288,17 +303,6 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
           <MdArrowForward size={16} />
         </MenuItem>
       </Menu>
-
-      <HQPlayerTakeoverDialog
-        open={takeoverDialogOpen}
-        onClose={() => setTakeoverDialogOpen(false)}
-        onConfirm={() => {
-          if (pendingDev) {
-            doSelectDevice(pendingDev, true)
-          }
-        }}
-        occupiedBy={occupiedBy}
-      />
     </>
   )
 }

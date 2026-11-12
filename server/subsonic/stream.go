@@ -51,6 +51,11 @@ func (api *Router) Stream(w http.ResponseWriter, r *http.Request) (*responses.Su
 	}
 
 	if mf != nil && strings.HasPrefix(mf.Path, "online://") {
+		// 0. Cache hit: direct disk stream
+		if musicengine.GetCacheManager().ServeCachedTrack(w, r, mf.ID) {
+			return nil, nil
+		}
+
 		source, songID, quality, ok := musicengine.ParseProtocolPath(mf.Path)
 		if !ok {
 			source, songID, ok = musicengine.ParseUniversalID(mf.ID)
@@ -62,7 +67,7 @@ func (api *Router) Stream(w http.ResponseWriter, r *http.Request) (*responses.Su
 				log.Error(ctx, "Subsonic Stream: Failed to resolve online stream URL", "id", id, err)
 				return nil, newError(responses.ErrorDataNotFound, "Online song unavailable: %s", err.Error())
 			}
-			relay := musicengine.NewStreamRelay(resolved, 0, int64(mf.Size))
+			relay := musicengine.NewStreamRelay(resolved, 0, int64(mf.Size), mf.ID)
 			defer relay.Close()
 			if err := relay.StartPull(ctx, 0); err != nil {
 				log.Error(ctx, "Subsonic Stream: Failed to connect to online audio CDN", "id", id, err)

@@ -8,6 +8,7 @@ import {
   createMuiTheme,
   useAuthState,
   useDataProvider,
+  useNotify,
   useTranslate,
 } from 'react-admin'
 import ReactGA from 'react-ga'
@@ -36,7 +37,6 @@ import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
 import { httpClient } from '../dataProvider'
-import HQPlayerTakeoverDialog from './HQPlayerTakeoverDialog'
 
 class PlayerErrorBoundary extends React.Component {
   constructor(props) {
@@ -99,6 +99,7 @@ const SILENT_AUDIO_URI =
 const Player = () => {
   const theme = useCurrentTheme()
   const translate = useTranslate()
+  const notify = useNotify()
   const playerTheme = theme.player?.theme || 'dark'
   const dataProvider = useDataProvider()
   const playerState = useSelector((state) => state.player)
@@ -115,8 +116,6 @@ const Player = () => {
   const [heartbeatTrackId, setHeartbeatTrackId] = useState(null)
   const [audioInstance, setAudioInstance] = useState(null)
   const [activeOutputDevice, setActiveOutputDevice] = useState('local')
-  const [takeoverDialogOpen, setTakeoverDialogOpen] = useState(false)
-  const [occupiedBy, setOccupiedBy] = useState(null)
   const [context, setContext] = useState(null)
   const [gainNode, setGainNode] = useState(null)
 
@@ -134,7 +133,8 @@ const Player = () => {
   const activeDeviceNameRef = useRef('HQPlayer')
   const isQueueOpenRef = useRef(false)
   const isHiddenRef = useRef(false)
-  const pendingTakeoverActionRef = useRef(null)
+  const isSwitchingTargetRef = useRef(false)
+  const saveTerminalQueueTimerRef = useRef(null)
   const virtualSecRef = useRef(0)
   const remoteProgressRef = useRef({
     baseSec: 0,
@@ -301,6 +301,48 @@ const Player = () => {
       .map((item) => item.trackId)
 
     if (trackIds.length === 0) {
+      if (activeOutputDeviceRef.current === 'local' && (!state.queue || state.queue.length === 0)) {
+        httpClient('/api/player/terminal-queue')
+          .then(({ json }) => {
+            if (json && json.found && json.queue && json.queue.length > 0) {
+              const idx =
+                json.currentIndex >= 0 && json.currentIndex < json.queue.length
+                  ? json.currentIndex
+                  : 0
+              const restoredQueue = json.queue.map((t) => ({
+                trackId: t.trackId,
+                uuid: t.trackId,
+                name: t.title,
+                singer: t.artist,
+                duration: t.duration,
+                cover: sanitizeImageUrl(
+                  t.cover || t.coverUrl || subsonic.getCoverArtUrl({ id: t.trackId }, 300),
+                ),
+                musicSrc: subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
+                song: {
+                  id: t.trackId,
+                  title: t.title,
+                  artist: t.artist,
+                  album: t.album,
+                  duration: t.duration,
+                },
+              }))
+              dispatch(syncQueue(restoredQueue[idx], restoredQueue))
+              if (json.timeOffset > 0) {
+                lastPositionMsRef.current = Math.floor(json.timeOffset * 1000)
+                if (restoredQueue[idx]?.trackId) {
+                  try {
+                    sessionStorage.setItem(
+                      'nd_pos_' + restoredQueue[idx].trackId,
+                      String(json.timeOffset),
+                    )
+                  } catch (e) {}
+                }
+              }
+            }
+          })
+          .catch(() => {})
+      }
       dispatch(refreshQueue())
       return
     }
@@ -517,6 +559,7 @@ const Player = () => {
       }
       const isNowRemote = newId !== 'local'
       if (isNowRemote) {
+        isSwitchingTargetRef.current = true
         // 1. Pause and mute local audio instance
         if (audioInstanceRef.current) {
           isSyntheticEventRef.current = true
@@ -529,17 +572,23 @@ const Player = () => {
         localQueueSnapshotRef.current = {
           queue: playerStateRef.current?.queue || [],
           current: playerStateRef.current?.current || {},
+          playIndex: playerStateRef.current?.playIndex ?? 0,
         }
 
-        // 2. Fetch fresh remote queue from server
+        // 2. Fetch fresh remote queue for this target device (read-only, never overwrite)
         dispatch(syncQueue(null, []))
-        httpClient('/api/output/queue?channel=remote')
+        httpClient(`/api/output/queue?deviceId=${newId}`)
           .then(({ json }) => {
             if (json && json.queue && json.queue.length > 0) {
               syncChannelQueueToRedux(json, true)
             }
           })
           .catch(() => {})
+          .finally(() => {
+            setTimeout(() => {
+              isSwitchingTargetRef.current = false
+            }, 500)
+          })
 
         // 3. Fetch latest remote playback status
         httpClient('/api/output/status')
@@ -565,6 +614,7 @@ const Player = () => {
           .catch(() => {})
       } else {
         // Switching back from remote to local:
+        isSwitchingTargetRef.current = true
         // 1. Reset remote virtual clock so remote progress is never inherited
         remoteProgressRef.current = {
           baseSec: 0,
@@ -579,10 +629,44 @@ const Player = () => {
           audioInstanceRef.current.muted = false
         }
 
-        // 2. Restore local queue snapshot if present (Scheme A: Local Autonomy)
+        // 2. Restore local queue snapshot if present
         if (localQueueSnapshotRef.current?.queue?.length > 0) {
           const snap = localQueueSnapshotRef.current
           dispatch(syncQueue(snap.current, snap.queue))
+          setTimeout(() => {
+            isSwitchingTargetRef.current = false
+          }, 300)
+        } else {
+          // Restore from terminal queue on server
+          httpClient('/api/player/terminal-queue')
+            .then(({ json }) => {
+              if (json && json.found && json.queue && json.queue.length > 0) {
+                const idx = json.currentIndex >= 0 && json.currentIndex < json.queue.length ? json.currentIndex : 0
+                const restoredQueue = json.queue.map((t) => ({
+                  trackId: t.trackId,
+                  uuid: t.trackId,
+                  name: t.title,
+                  singer: t.artist,
+                  duration: t.duration,
+                  cover: sanitizeImageUrl(t.cover || t.coverUrl || subsonic.getCoverArtUrl({ id: t.trackId }, 300)),
+                  musicSrc: subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
+                  song: {
+                    id: t.trackId,
+                    title: t.title,
+                    artist: t.artist,
+                    album: t.album,
+                    duration: t.duration,
+                  },
+                }))
+                dispatch(syncQueue(restoredQueue[idx], restoredQueue))
+              }
+            })
+            .catch(() => {})
+            .finally(() => {
+              setTimeout(() => {
+                isSwitchingTargetRef.current = false
+              }, 300)
+            })
         }
       }
     }
@@ -718,8 +802,12 @@ const Player = () => {
     playerState.autoPlay,
   ])
   useEffect(() => {
-    // Scheme A: Local queue is completely autonomous on client, never synced to server
+    // Scheme A: Local queue is completely autonomous on client, never synced to server as remote queue
     if (activeOutputDevice === 'local' || activeOutputDeviceRef.current === 'local') {
+      return
+    }
+    // Block automatic queue overwrite when switching output target
+    if (isSwitchingTargetRef.current) {
       return
     }
     if (!playerState.queue || !playerState.queue.length) return
@@ -746,36 +834,21 @@ const Player = () => {
       playerState.clear || playerState.playIndex != null || isPlaying,
     )
 
-    const sendQueue = (forceTakeover = false) => {
-      httpClient('/api/output/queue', {
-        method: 'POST',
-        body: JSON.stringify({
-          channel: 'remote',
-          deviceId: targetDevice,
-          tracks: payloadTracks,
-          startIndex: currentIdx,
-          timeOffset:
-            audioInstance?.currentTime && audioInstance.currentTime >= 1.0
-              ? audioInstance.currentTime
-              : 0,
-          playMode: playerState.mode,
-          autoPlay: shouldAutoPlay,
-          forceTakeover,
-        }),
-      }).catch((err) => {
-        if (err.status === 409 || err.body?.code === 'HQPLAYER_OCCUPIED') {
-          setOccupiedBy(
-            err.body?.occupiedBy || {
-              userName: '其他用户',
-              trackTitle: '外部音频流',
-            },
-          )
-          pendingTakeoverActionRef.current = () => sendQueue(true)
-          setTakeoverDialogOpen(true)
-        }
-      })
-    }
-    sendQueue(false)
+    httpClient('/api/output/queue', {
+      method: 'POST',
+      body: JSON.stringify({
+        channel: 'remote',
+        deviceId: targetDevice,
+        tracks: payloadTracks,
+        startIndex: currentIdx,
+        timeOffset:
+          audioInstance?.currentTime && audioInstance.currentTime >= 1.0
+            ? audioInstance.currentTime
+            : 0,
+        playMode: playerState.mode,
+        autoPlay: shouldAutoPlay,
+      }),
+    }).catch(() => {})
   }, [
     activeOutputDevice,
     playerState.queue,
@@ -784,6 +857,35 @@ const Player = () => {
     playerState.clear,
     audioInstance,
   ])
+
+  // Local mode: save terminal queue to server periodically (isolated by clientId)
+  useEffect(() => {
+    if (activeOutputDevice !== 'local' || activeOutputDeviceRef.current !== 'local') return
+    if (!playerState.queue || playerState.queue.length === 0) return
+
+    if (saveTerminalQueueTimerRef.current) {
+      clearTimeout(saveTerminalQueueTimerRef.current)
+    }
+    saveTerminalQueueTimerRef.current = setTimeout(() => {
+      const tracks = playerState.queue.map((t) => ({
+        trackId: t.trackId,
+        title: t.song?.title || t.name || '',
+        artist: t.song?.artist || t.singer || '',
+        album: t.song?.album || '',
+        duration: t.duration || t.song?.duration || 0,
+      }))
+      const idx = playerState.playIndex ?? playerState.savedPlayIndex ?? 0
+      const offset = audioInstanceRef.current?.currentTime || 0
+      httpClient('/api/player/terminal-queue', {
+        method: 'POST',
+        body: JSON.stringify({
+          queue: tracks,
+          currentIndex: idx,
+          timeOffset: offset,
+        }),
+      }).catch(() => {})
+    }, 1000)
+  }, [activeOutputDevice, playerState.queue, playerState.playIndex])
 
   // Sync state from server session every 2 seconds
   useInterval(
@@ -1196,47 +1298,27 @@ const Player = () => {
           remoteProgressRef.current.duration = info.duration || 0
           remoteProgressRef.current.playing = true
           virtualSecRef.current = 0
-          const sendJump = (forceTakeover = false) => {
+          httpClient('/api/output/control', {
+            method: 'POST',
+            body: JSON.stringify({
+              channel: 'remote',
+              deviceId: activeOutputDeviceRef.current,
+              action: 'jump',
+              index: targetIndex,
+            }),
+          }).catch(() => {})
+        } else {
+          if (!remoteProgressRef.current.playing) {
+            remoteProgressRef.current.playing = true
+            remoteProgressRef.current.baseClientTime = Date.now()
             httpClient('/api/output/control', {
               method: 'POST',
               body: JSON.stringify({
                 channel: 'remote',
                 deviceId: activeOutputDeviceRef.current,
-                action: 'jump',
-                index: targetIndex,
-                forceTakeover,
+                action: 'play',
               }),
-            }).catch((err) => {
-              if (err.status === 409 || err.body?.code === 'HQPLAYER_OCCUPIED') {
-                setOccupiedBy(err.body?.occupiedBy || { userName: '其他用户', trackTitle: '外部音频流' })
-                pendingTakeoverActionRef.current = () => sendJump(true)
-                setTakeoverDialogOpen(true)
-              }
-            })
-          }
-          sendJump(false)
-        } else {
-          if (!remoteProgressRef.current.playing) {
-            remoteProgressRef.current.playing = true
-            remoteProgressRef.current.baseClientTime = Date.now()
-            const sendPlay = (forceTakeover = false) => {
-              httpClient('/api/output/control', {
-                method: 'POST',
-                body: JSON.stringify({
-                  channel: 'remote',
-                  deviceId: activeOutputDeviceRef.current,
-                  action: 'play',
-                  forceTakeover,
-                }),
-              }).catch((err) => {
-                if (err.status === 409 || err.body?.code === 'HQPLAYER_OCCUPIED') {
-                  setOccupiedBy(err.body?.occupiedBy || { userName: '其他用户', trackTitle: '外部音频流' })
-                  pendingTakeoverActionRef.current = () => sendPlay(true)
-                  setTakeoverDialogOpen(true)
-                }
-              })
-            }
-            sendPlay(false)
+            }).catch(() => {})
           }
         }
       }
@@ -1247,18 +1329,23 @@ const Player = () => {
         const sArtist = song.artist || info.singer || ''
         document.title = `${sTitle} - ${sArtist} - Navidrome`
         if (!info.isRadio) {
-          const posMs = Math.floor(info.currentTime * 1000)
-          lastPositionMsRef.current = posMs
-          const isNewTrack = info.trackId !== currentTrackId
+          const isNewTrack = info.trackId !== currentTrackIdRef.current
           if (activeOutputDeviceRef.current === 'local') {
             if (isNewTrack) {
-              subsonic
-                .reportPlayback(info.trackId, posMs, 'starting')
-                .then(() =>
-                  subsonic.reportPlayback(info.trackId, posMs, 'playing'),
-                )
+              if (audioInstance && audioInstance.currentTime > 0) {
+                audioInstance.currentTime = 0
+              }
+              lastPositionMsRef.current = 0
+              currentTrackIdRef.current = info.trackId
               setCurrentTrackId(info.trackId)
+              subsonic
+                .reportPlayback(info.trackId, 0, 'starting')
+                .then(() =>
+                  subsonic.reportPlayback(info.trackId, 0, 'playing'),
+                )
             } else {
+              const posMs = Math.floor((info.currentTime || 0) * 1000)
+              lastPositionMsRef.current = posMs
               subsonic.reportPlayback(info.trackId, posMs, 'playing')
             }
             setHeartbeatTrackId(info.trackId)
@@ -1417,6 +1504,54 @@ const Player = () => {
     document.title = 'Navidrome'
   }
 
+  const handleImportLocalQueueToRemote = useCallback(() => {
+    const localSnap = localQueueSnapshotRef.current
+    if (!localSnap || !localSnap.queue || localSnap.queue.length === 0) {
+      notify('本机暂无可导入的播放列表', 'warning')
+      return
+    }
+    const targetDev = activeOutputDeviceRef.current
+    const devName = activeDeviceNameRef.current || '远端设备'
+    const confirm = window.confirm(
+      `是否将本机列表 (${localSnap.queue.length} 首歌曲) 推送到 ${devName} 并立即播放？`,
+    )
+    if (!confirm) return
+
+    const payloadTracks = localSnap.queue.map((item) => ({
+      trackId: item.trackId,
+      title: item.song?.title || item.name || '',
+      artist: item.song?.artist || item.singer || '',
+      album: item.song?.album || '',
+      duration: item.duration || item.song?.duration || 0,
+      streamUrl: `/api/output/stream/${item.trackId}`,
+    }))
+
+    const startIdx = localSnap.playIndex || 0
+    httpClient('/api/output/queue', {
+      method: 'POST',
+      body: JSON.stringify({
+        channel: 'remote',
+        deviceId: targetDev,
+        tracks: payloadTracks,
+        startIndex: startIdx,
+        timeOffset: 0,
+        playMode: playerState.mode || 'orderLoop',
+        autoPlay: true,
+      }),
+    })
+      .then(() => {
+        notify(`已成功将本机列表推送到 ${devName}`, 'success')
+        httpClient(`/api/output/queue?deviceId=${targetDev}`)
+          .then(({ json }) => {
+            if (json && json.queue) syncChannelQueueToRedux(json, true)
+          })
+          .catch(() => {})
+      })
+      .catch((err) => {
+        notify(`导入失败: ${err.message}`, 'error')
+      })
+  }, [notify, playerState.mode, syncChannelQueueToRedux])
+
   const handlers = useMemo(
     () => keyHandlers(audioInstance, playerState),
     [audioInstance, playerState],
@@ -1493,7 +1628,7 @@ const Player = () => {
       releaseWakeLock()
 
       // Hardware / wireless charging / system audio session interruption recovery:
-      // If audio was paused by external interruption without user clicking pause, auto-resume
+      // If audio was paused by external interruption without user clicking pause, auto-resume after 1500ms
       if (
         activeOutputDeviceRef.current === 'local' &&
         !isUserExplicitlyPausedRef.current &&
@@ -1510,17 +1645,23 @@ const Player = () => {
             !audioInstance.ended &&
             currentTrackIdRef.current
           ) {
-            console.log('[LocalAudio] Auto-resuming after hardware/charging interruption...')
+            console.log('[LocalAudio] Auto-resuming after passive interruption (1500ms)...')
             const p = audioInstance.play()
             if (p && p.then) {
-              p.catch((err) => {
+              p.then(() => {
+                console.log('[LocalAudio] Passive interruption successfully auto-resumed')
+              }).catch((err) => {
                 if (err.name !== 'AbortError') {
-                  console.log('[LocalAudio] Interruption auto-resume deferred:', err)
+                  console.warn('[LocalAudio] Interruption auto-resume failed/rejected (call or focus lost), fusing to paused state:', err)
                 }
+                // One-shot failure breaker: do NOT retry in a loop!
+                isUserExplicitlyPausedRef.current = true
+                isUserPausedRef.current = true
+                stopSilentKeepAlive()
               })
             }
           }
-        }, 500)
+        }, 1500)
       } else {
         stopSilentKeepAlive()
         isUserPausedRef.current = true
@@ -1530,11 +1671,10 @@ const Player = () => {
     const handleEnded = () => {
       isUserPausedRef.current = false
       isUserExplicitlyPausedRef.current = false
-      stopSilentKeepAlive()
+      // Keep silent keepalive running across song transition to prevent OS freezing JS thread!
       if ('mediaSession' in navigator) {
-        navigator.mediaSession.playbackState = 'none'
+        navigator.mediaSession.playbackState = 'playing'
       }
-      releaseWakeLock()
     }
 
     const handleTimeUpdate = () => {
@@ -1802,6 +1942,31 @@ const Player = () => {
             try {
               window.history.pushState({ nd_modal: 'queue' }, '')
             } catch (e) {}
+
+            setTimeout(() => {
+              const header = document.querySelector('.audio-lists-panel-header')
+              if (header && activeOutputDeviceRef.current !== 'local') {
+                let btn = header.querySelector('.nd-import-local-queue-btn')
+                if (!btn) {
+                  btn = document.createElement('span')
+                  btn.className = 'nd-import-local-queue-btn'
+                  btn.innerHTML =
+                    '<span style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:3px 8px;margin-right:8px;border-radius:12px;background:rgba(25,118,210,0.18);color:#1976d2;font-size:0.75rem;font-weight:600;border:1px solid rgba(25,118,210,0.35);user-select:none" title="将本机列表推送到当前远端输出设备">📥 导入本机列表</span>'
+                  btn.onclick = (e) => {
+                    e.stopPropagation()
+                    handleImportLocalQueueToRemote()
+                  }
+                  const closeBtn = header.querySelector(
+                    '.audio-lists-panel-header-close-btn',
+                  )
+                  if (closeBtn) {
+                    header.insertBefore(btn, closeBtn)
+                  } else {
+                    header.appendChild(btn)
+                  }
+                }
+              }
+            }, 100)
           } else {
             if (isQueueOpenRef.current) {
               isQueueOpenRef.current = false
@@ -1816,15 +1981,6 @@ const Player = () => {
         getAudioInstance={setAudioInstance}
       />
       <GlobalHotKeys handlers={handlers} keyMap={keyMap} allowChanges />
-      <HQPlayerTakeoverDialog
-        open={takeoverDialogOpen}
-        onClose={() => setTakeoverDialogOpen(false)}
-        onConfirm={() => {
-          setTakeoverDialogOpen(false)
-          pendingTakeoverActionRef.current?.()
-        }}
-        occupiedBy={occupiedBy}
-      />
     </ThemeProvider>
     </PlayerErrorBoundary>
   )

@@ -29,20 +29,26 @@ var hopByHopHeaders = map[string]bool{
 // StreamRelay coordinates pulling audio from an upstream CDN into a SlabRingBuffer
 // and serving it to downstream clients (HQPlayer, web player, Subsonic)
 type StreamRelay struct {
-	stream      *ResolvedStream
-	buffer      *SlabRingBuffer
-	client      *http.Client
-	cancelPull  context.CancelFunc
-	pullLock    sync.Mutex
-	totalSize   int64
-	currOffset  int64
-	isChunked   bool
+	trackID      string
+	stream       *ResolvedStream
+	buffer       *SlabRingBuffer
+	client       *http.Client
+	cancelPull   context.CancelFunc
+	pullLock     sync.Mutex
+	totalSize    int64
+	currOffset   int64
+	isChunked    bool
 	estimatedLen int64
 }
 
 // NewStreamRelay creates a new relay instance
-func NewStreamRelay(stream *ResolvedStream, initialOffset int64, defaultEstimatedLen int64) *StreamRelay {
+func NewStreamRelay(stream *ResolvedStream, initialOffset int64, defaultEstimatedLen int64, trackID ...string) *StreamRelay {
+	tID := ""
+	if len(trackID) > 0 {
+		tID = trackID[0]
+	}
 	return &StreamRelay{
+		trackID:      tID,
 		stream:       stream,
 		buffer:       NewSlabRingBuffer(initialOffset),
 		client: &http.Client{
@@ -242,6 +248,18 @@ func (r *StreamRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	w.WriteHeader(status)
 
+	// Lightweight async on-disk caching if reading from the start
+	var cacheWriter io.WriteCloser
+	var commitCache func(bool)
+	if reqStart == 0 && r.trackID != "" {
+		cacheWriter, commitCache = GetCacheManager().CreateCacheWriter(r.trackID)
+	}
+	defer func() {
+		if commitCache != nil {
+			commitCache(written >= streamLen || written > 1024*1024)
+		}
+	}()
+
 	// Stream to downstream client in 64KB chunks
 	buf := make([]byte, SlabSize)
 	var written int64 = 0
@@ -261,6 +279,9 @@ func (r *StreamRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		n, err := r.buffer.ReadAt(buf[:toRead], currOff)
 		if n > 0 {
+			if cacheWriter != nil {
+				_, _ = cacheWriter.Write(buf[:n])
+			}
 			wn, werr := w.Write(buf[:n])
 			written += int64(wn)
 			currOff += int64(wn)

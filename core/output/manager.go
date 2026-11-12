@@ -383,36 +383,8 @@ func (m *Manager) GetHQPlayerConfig() HQPlayerConfig {
 }
 
 func (m *Manager) CheckHQPlayerAccess(userID, userName string, forceTakeover bool) (bool, *HQPlayerLease) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	// 1. Unowned or idle (>10m inactivity or stopped state)
-	if m.hqLease.OwnerUserID == "" || m.hqLease.State == "stopped" || time.Since(m.hqLease.LastActiveAt) > 10*time.Minute {
-		return true, nil
-	}
-
-	// 2. Same user across multiple devices (PC, Phone, Tablet) -> grant directly, no popup
-	if m.hqLease.OwnerUserID == userID {
-		m.hqLease.LastActiveAt = time.Now()
-		return true, nil
-	}
-
-	// 3. User confirmed takeover explicitly -> execute graceful release and grant access
-	if forceTakeover {
-		log.Info(fmt.Sprintf("HQPlayer: User %s (%s) forced takeover from previous owner %s (%s)",
-			userName, userID, m.hqLease.OwnerUserName, m.hqLease.OwnerUserID))
-		cfg := m.hqConfig
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = m.hqClient.GracefulRelease(ctx, cfg)
-		}()
-		return true, nil
-	}
-
-	// 4. Different user active on HQPlayer -> conflict, return current owner lease for popup
-	leaseCopy := m.hqLease
-	return false, &leaseCopy
+	// In single master account & shared hardware model, all clients share control of the hardware queue without 409 conflict.
+	return true, nil
 }
 
 func (m *Manager) AcquireHQPlayerLease(userID, userName string, track TrackMetadata) {

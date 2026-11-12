@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -378,6 +379,42 @@ func contextWithUser(ctx context.Context, ds model.DataStore, username string) (
 	return ctx, err
 }
 
+// IsAutoLoginEnabled checks if default admin auto-login is active.
+// It is enabled by default unless ND_AUTO_LOGIN is explicitly set to false/0/no.
+func IsAutoLoginEnabled() bool {
+	val := strings.TrimSpace(os.Getenv("ND_AUTO_LOGIN"))
+	if strings.EqualFold(val, "false") || val == "0" || strings.EqualFold(val, "no") {
+		return false
+	}
+	return true
+}
+
+func handleDefaultAdminLogin(ds model.DataStore, r *http.Request) map[string]any {
+	ctx := r.Context()
+	userRepo := ds.User()
+	admin, err := userRepo.FindFirstAdmin(ctx)
+	if err != nil || admin == nil {
+		users, errUsers := userRepo.GetAll(ctx)
+		if errUsers == nil && len(users) > 0 {
+			admin = &users[0]
+		}
+	}
+	if admin == nil {
+		return nil
+	}
+	user, err := userRepo.FindByUsernameWithPassword(ctx, admin.UserName)
+	if err != nil || user == nil {
+		user = admin
+	}
+	_ = userRepo.UpdateLastLoginAt(ctx, user.ID)
+	payload := buildAuthPayload(user)
+	tokenString, err := auth.CreateToken(user)
+	if err == nil && tokenString != "" {
+		payload["token"] = tokenString
+	}
+	return payload
+}
+
 func authenticateRequest(ds model.DataStore, r *http.Request, findUsernameFns ...func(r *http.Request) string) (context.Context, error) {
 	var username string
 	for _, fn := range findUsernameFns {
@@ -387,6 +424,18 @@ func authenticateRequest(ds model.DataStore, r *http.Request, findUsernameFns ..
 		}
 	}
 	if username == "" {
+		if IsAutoLoginEnabled() {
+			ctx := r.Context()
+			userRepo := ds.User()
+			admin, err := userRepo.FindFirstAdmin(ctx)
+			if err == nil && admin != nil {
+				return contextWithUser(r.Context(), ds, admin.UserName)
+			}
+			users, errUsers := userRepo.GetAll(ctx)
+			if errUsers == nil && len(users) > 0 {
+				return contextWithUser(r.Context(), ds, users[0].UserName)
+			}
+		}
 		return nil, ErrUnauthenticated
 	}
 

@@ -91,6 +91,9 @@ func serveIndex(ds model.DataStore, fs fs.FS, shareInfo *model.Share) http.Handl
 			appConfig["loginBackgroundURL"] = path.Join(conf.Server.BasePath, conf.Server.UILoginBackgroundURL)
 		}
 		auth := handleLoginFromHeaders(ds, r)
+		if auth == nil && IsAutoLoginEnabled() {
+			auth = handleDefaultAdminLogin(ds, r)
+		}
 		if auth != nil {
 			appConfig["auth"] = auth
 		}
