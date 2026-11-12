@@ -248,6 +248,9 @@ func (r *StreamRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	w.WriteHeader(status)
 
+	var written int64 = 0
+	currOff := reqStart
+
 	// Lightweight async on-disk caching if reading from the start
 	var cacheWriter io.WriteCloser
 	var commitCache func(bool)
@@ -262,8 +265,6 @@ func (r *StreamRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Stream to downstream client in 64KB chunks
 	buf := make([]byte, SlabSize)
-	var written int64 = 0
-	currOff := reqStart
 
 	for written < streamLen {
 		select {
