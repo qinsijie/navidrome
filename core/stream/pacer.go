@@ -24,8 +24,8 @@ type PacedResponseWriter struct {
 func CalculateAudioPacingRate(fileSize int64, durationSec float32, suffix string) float64 {
 	if fileSize > 0 && durationSec > 5 {
 		nominal := float64(fileSize) / float64(durationSec)
-		// 1.30x headroom provides a 30% safety margin above real-time decoding speed
-		paced := nominal * 1.30
+		// 1.06x headroom provides a 6% safety margin above real-time decoding speed for smooth Roon-like pacing
+		paced := nominal * 1.06
 		if paced < 180*1024 {
 			paced = 180 * 1024
 		}
@@ -44,13 +44,31 @@ func CalculateAudioPacingRate(fileSize int64, durationSec float32, suffix string
 	}
 }
 
+// CalculatePCMPacingRate computes the steady-state 1.06x byte rate for uncompressed PCM/WAV streams.
+func CalculatePCMPacingRate(sampleRate, channels, bitDepth int) float64 {
+	if sampleRate <= 0 {
+		sampleRate = 44100
+	}
+	if channels <= 0 {
+		channels = 2
+	}
+	if bitDepth <= 0 {
+		bitDepth = 16
+	}
+	byteRate := sampleRate * channels * (bitDepth / 8)
+	if byteRate <= 0 {
+		return 176400 * 1.06
+	}
+	return float64(byteRate) * 1.06
+}
+
 // NewPacedResponseWriter constructs a token-bucket rate pacer wrapping an http.ResponseWriter.
 func NewPacedResponseWriter(ctx context.Context, w http.ResponseWriter, targetBytesPerSec float64, burstBytes int) *PacedResponseWriter {
 	if targetBytesPerSec <= 0 {
 		targetBytesPerSec = 220 * 1024
 	}
 	if burstBytes <= 0 {
-		burstBytes = 1024 * 1024 // 1 MB initial burst for instant header parsing and transport priming
+		burstBytes = 128 * 1024 // 128 KB initial burst for instant WAV/audio header parsing and transport priming
 	}
 	flusher, _ := w.(http.Flusher)
 	return &PacedResponseWriter{
@@ -58,7 +76,7 @@ func NewPacedResponseWriter(ctx context.Context, w http.ResponseWriter, targetBy
 		ctx:            ctx,
 		limiter:        rate.NewLimiter(rate.Limit(targetBytesPerSec), burstBytes),
 		flusher:        flusher,
-		chunkSize:      16 * 1024, // 16 KB chunks (~70-90ms interval at 200KB/s)
+		chunkSize:      4 * 1024, // 4 KB fine-grained chunks for smooth Roon-like constant-bitrate streaming
 	}
 }
 

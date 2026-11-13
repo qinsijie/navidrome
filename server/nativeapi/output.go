@@ -80,6 +80,19 @@ func resolveOutboundURL(r *http.Request, rawURL string, targetHost string) strin
 	return output.ResolveOutboundURL(r, rawURL, conf.Server.Port, targetHost)
 }
 
+func appendPCMModeIfHQPlayer(streamURL string, isHQPlayer bool, mgr *output.Manager) string {
+	if !isHQPlayer || streamURL == "" || mgr.GetHQPlayerConfig().StreamMode == "raw" {
+		return streamURL
+	}
+	if !strings.Contains(streamURL, "/api/output/stream/") || strings.Contains(streamURL, "mode=") {
+		return streamURL
+	}
+	if strings.Contains(streamURL, "?") {
+		return streamURL + "&mode=pcm"
+	}
+	return streamURL + "?mode=pcm"
+}
+
 // addPublicOutputRoutes mounts unauthenticated endpoints for remote DACs / players (HQPlayer, DLNA)
 // to fetch raw physical audio streams without token expiration limitations.
 func (api *Router) addPublicOutputRoutes(r chi.Router) {
@@ -96,10 +109,15 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 			return
 		}
 
+		if r.URL.Query().Get("mode") == "pcm" && !output.IsDSDMedia(mf.Suffix, mf.Path) {
+			output.ServePCMStream(w, r, mf, api.ds)
+			return
+		}
+
 		if strings.HasPrefix(mf.Path, "online://") {
 			// 0. Cache hit: direct disk stream with pacer
 			pacingRate := stream.CalculateAudioPacingRate(int64(mf.Size), mf.Duration, mf.Suffix)
-			pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 1024*1024)
+			pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 128*1024)
 			if musicengine.GetCacheManager().ServeCachedTrack(pw, r, mf.ID) {
 				return
 			}
@@ -197,7 +215,7 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 			)
 		}
 
-		pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 1024*1024)
+		pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 128*1024)
 		http.ServeContent(pw, r, fi.Name(), fi.ModTime(), f)
 	}
 
@@ -480,6 +498,7 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		targetHost := mgr.GetActiveTargetHost()
 		outboundIP := output.DetectOutboundIP(targetHost)
 		port := conf.Server.Port
+		isHQPlayer := targetChannel == "remote" && (targetDev == "hqplayer" || (targetDev == "" && mgr.GetActiveDevice() == "hqplayer"))
 
 		for i := range req.Tracks {
 			t := &req.Tracks[i]
@@ -488,6 +507,7 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			} else if strings.HasPrefix(t.Stream, "/") {
 				t.Stream = fmt.Sprintf("http://%s:%d%s", outboundIP, port, t.Stream)
 			}
+			t.Stream = appendPCMModeIfHQPlayer(t.Stream, isHQPlayer, mgr)
 			if t.Duration <= 0 && t.TrackID != "" {
 				if mf, err := api.ds.MediaFile().Get(r.Context(), t.TrackID); err == nil && mf != nil {
 					t.Duration = float64(mf.Duration)
@@ -633,7 +653,10 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		}
 
 		if targetChannel == "remote" {
-			if targetDev == "hqplayer" || mgr.GetActiveDevice() == "hqplayer" {
+			isHQPlayer := targetDev == "hqplayer" || mgr.GetActiveDevice() == "hqplayer"
+			resolvedURL = appendPCMModeIfHQPlayer(resolvedURL, isHQPlayer, mgr)
+			meta.Stream = resolvedURL
+			if isHQPlayer {
 				canAccess, owner := mgr.CheckHQPlayerAccess(user.ID, user.UserName, req.ForceTakeover)
 				if !canAccess {
 					w.Header().Set("Content-Type", "application/json")

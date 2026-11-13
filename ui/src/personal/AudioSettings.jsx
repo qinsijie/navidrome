@@ -23,6 +23,7 @@ import {
   Chip,
   CircularProgress,
   Grid,
+  MenuItem,
 } from '@material-ui/core'
 import { makeStyles } from '@material-ui/core/styles'
 import {
@@ -107,6 +108,7 @@ const AudioSettings = () => {
     host: '',
     port: 4321,
     enabled: false,
+    streamMode: 'pcm',
   })
   const [hqTesting, setHqTesting] = useState(false)
   const [hqTestResult, setHqTestResult] = useState(null)
@@ -138,6 +140,7 @@ const AudioSettings = () => {
               host: json.hqConfig.host || '',
               port: json.hqConfig.port || 4321,
               enabled: json.hqConfig.enabled || false,
+              streamMode: json.hqConfig.streamMode || 'pcm',
             })
           }
 
@@ -185,6 +188,7 @@ const AudioSettings = () => {
         host: hqConfig.host.trim(),
         port: parseInt(hqConfig.port, 10) || 4321,
         enabled: hqConfig.enabled,
+        streamMode: hqConfig.streamMode || 'pcm',
       }),
     })
       .then(() => {
@@ -421,6 +425,21 @@ const AudioSettings = () => {
                 onChange={(e) => setHqConfig({ ...hqConfig, port: e.target.value })}
                 placeholder="4321"
               />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                select
+                label="网络推流模式"
+                fullWidth
+                variant="outlined"
+                size="small"
+                value={hqConfig.streamMode || 'pcm'}
+                onChange={(e) => setHqConfig({ ...hqConfig, streamMode: e.target.value })}
+                helperText="类 Roon 恒定 PCM (WAV) 模式在服务端解码并以 1.06x 匀速直线推流，消除网速抖动与 HQPE 解码尖峰；原生 DSD (.dsf/.dff) 始终保持源码直通"
+              >
+                <MenuItem value="pcm">类 Roon 恒定 PCM (WAV) 直线推流（推荐）</MenuItem>
+                <MenuItem value="raw">原始文件直通</MenuItem>
+              </TextField>
             </Grid>
           </Grid>
 

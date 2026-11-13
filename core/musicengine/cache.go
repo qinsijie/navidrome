@@ -174,6 +174,18 @@ func (m *StreamCacheManager) tmpPath(trackID string) string {
 	return filepath.Join(m.cacheDir, m.keyForTrack(trackID)+".tmp")
 }
 
+// GetCachedFilePath returns the local disk path of a completed cached track if available.
+func (m *StreamCacheManager) GetCachedFilePath(trackID string) (string, bool) {
+	p := m.finalPath(trackID)
+	fi, err := os.Stat(p)
+	if err != nil || fi.Size() == 0 {
+		return "", false
+	}
+	now := time.Now()
+	_ = os.Chtimes(p, now, now)
+	return p, true
+}
+
 // ServeCachedTrack attempts to serve the track from disk with full HTTP Range support.
 // Returns true if successfully served from local cache.
 func (m *StreamCacheManager) ServeCachedTrack(w http.ResponseWriter, r *http.Request, trackID string) bool {

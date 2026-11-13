@@ -16,11 +16,12 @@ const DefaultHQPlayerPort = 4321
 
 // HQPlayerConfig stores configuration for HQPlayer node
 type HQPlayerConfig struct {
-	Name    string `json:"name"`
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	Enabled bool   `json:"enabled"`
-	Mode    string `json:"mode,omitempty"` // PCM, DSD
+	Name       string `json:"name"`
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	Enabled    bool   `json:"enabled"`
+	Mode       string `json:"mode,omitempty"`       // PCM, DSD
+	StreamMode string `json:"streamMode,omitempty"` // "pcm" (Roon-like WAV) or "raw" (original file passthrough)
 }
 
 type HQPlayerClient struct {

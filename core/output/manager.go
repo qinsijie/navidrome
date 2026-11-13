@@ -79,10 +79,11 @@ func GetManager() *Manager {
 			hqClient:     NewHQPlayerClient(),
 			httpClient:   &http.Client{Timeout: 5 * time.Second},
 			hqConfig: HQPlayerConfig{
-				Name:    "HQPlayer - 客厅",
-				Host:    "",
-				Port:    DefaultHQPlayerPort,
-				Enabled: false,
+				Name:       "HQPlayer - 客厅",
+				Host:       "",
+				Port:       DefaultHQPlayerPort,
+				Enabled:    false,
+				StreamMode: "pcm",
 			},
 		}
 		managerInstance.session = NewPlayerSession(managerInstance, string(DeviceTypeLocal))
@@ -370,8 +371,11 @@ func (m *Manager) SetHQPlayerConfig(cfg HQPlayerConfig) error {
 	if cfg.Name == "" {
 		cfg.Name = "HQPlayer - 客厅"
 	}
+	if cfg.StreamMode != "raw" {
+		cfg.StreamMode = "pcm"
+	}
 	m.hqConfig = cfg
-	log.Info(fmt.Sprintf("Updated HQPlayer configuration: %s (%s:%d, enabled=%v)", cfg.Name, cfg.Host, cfg.Port, cfg.Enabled))
+	log.Info(fmt.Sprintf("Updated HQPlayer configuration: %s (%s:%d, enabled=%v, streamMode=%s)", cfg.Name, cfg.Host, cfg.Port, cfg.Enabled, cfg.StreamMode))
 	go m.saveState()
 	return nil
 }
@@ -379,7 +383,11 @@ func (m *Manager) SetHQPlayerConfig(cfg HQPlayerConfig) error {
 func (m *Manager) GetHQPlayerConfig() HQPlayerConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.hqConfig
+	cfg := m.hqConfig
+	if cfg.StreamMode == "" {
+		cfg.StreamMode = "pcm"
+	}
+	return cfg
 }
 
 func (m *Manager) CheckHQPlayerAccess(userID, userName string, forceTakeover bool) (bool, *HQPlayerLease) {

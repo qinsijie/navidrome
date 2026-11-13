@@ -303,6 +303,55 @@ func (r *StreamRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// StreamTo pulls the upstream audio from offset 0 and copies raw bytes to dst while caching to disk.
+// Used for piping online tracks into ffmpeg for constant-bitrate PCM/WAV transcoding.
+func (r *StreamRelay) StreamTo(ctx context.Context, dst io.Writer) error {
+	if err := r.StartPull(ctx, 0); err != nil {
+		return err
+	}
+
+	var cacheWriter io.WriteCloser
+	var commitCache func(bool)
+	var written int64
+	if r.trackID != "" {
+		cacheWriter, commitCache = GetCacheManager().CreateCacheWriter(r.trackID)
+	}
+	defer func() {
+		if commitCache != nil {
+			commitCache(r.totalSize > 0 && written >= r.totalSize)
+		}
+	}()
+
+	buf := make([]byte, SlabSize)
+	var currOff int64
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		n, err := r.buffer.ReadAt(buf, currOff)
+		if n > 0 {
+			if cacheWriter != nil {
+				_, _ = cacheWriter.Write(buf[:n])
+			}
+			wn, werr := dst.Write(buf[:n])
+			written += int64(wn)
+			currOff += int64(wn)
+			if werr != nil {
+				return werr
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
 // Close terminates the relay and cleans up memory
 func (r *StreamRelay) Close() {
 	r.pullLock.Lock()
