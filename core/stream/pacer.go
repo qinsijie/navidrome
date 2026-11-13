@@ -24,8 +24,8 @@ type PacedResponseWriter struct {
 func CalculateAudioPacingRate(fileSize int64, durationSec float32, suffix string) float64 {
 	if fileSize > 0 && durationSec > 5 {
 		nominal := float64(fileSize) / float64(durationSec)
-		// 1.06x headroom provides a 6% safety margin above real-time decoding speed for smooth Roon-like pacing
-		paced := nominal * 1.06
+		// 1.30x headroom provides a 30% safety margin above real-time decoding speed for raw passthrough (DLNA/HQPE raw)
+		paced := nominal * 1.30
 		if paced < 180*1024 {
 			paced = 180 * 1024
 		}

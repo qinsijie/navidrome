@@ -1428,13 +1428,14 @@ const Player = () => {
               singer: dur ? `${rawSinger} · ${dur}` : rawSinger,
               musicSrc:
                 activeOutputDevice !== 'local'
-                  ? SILENT_AUDIO_URI
+                  ? ''
                   : item.musicSrc || SILENT_AUDIO_URI,
             }
           })
         : placeholderTracks,
       playIndex: hasQueue ? activePlayIndex : 0,
       autoPlay:
+        activeOutputDevice === 'local' &&
         hasQueue &&
         playerState.autoPlay !== false &&
         (playerState.clear || playerState.playIndex != null || playerState.playIndex === 0),
@@ -1453,6 +1454,7 @@ const Player = () => {
   )
 
   const onAudioProgress = useCallback((info) => {
+    if (activeOutputDeviceRef.current !== 'local') return
     if (info.ended) {
       document.title = 'Navidrome'
     }
@@ -1732,6 +1734,7 @@ const Player = () => {
 
   const onAudioError = useCallback(
     (error, currentPlayId, audioLists, audioInfo) => {
+      if (activeOutputDeviceRef.current !== 'local') return
       // Invalidate all cached decisions — token may be stale
       decisionService.invalidateAll()
 
@@ -1969,6 +1972,7 @@ const Player = () => {
     }
 
     const handlePause = () => {
+      if (activeOutputDeviceRef.current !== 'local') return
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'paused'
       }
@@ -2048,6 +2052,7 @@ const Player = () => {
     }
 
     const handleTimeUpdate = () => {
+      if (activeOutputDeviceRef.current !== 'local') return
       if (audioInstance.currentTime != null && !isNaN(audioInstance.currentTime)) {
         lastPositionMsRef.current = Math.floor(audioInstance.currentTime * 1000)
         // If track has played smoothly for >= 3 seconds, reset the consecutive skip avalanche counter!
@@ -2068,6 +2073,7 @@ const Player = () => {
 
     // Recover playback position on metadata loaded with one-shot lock
     const handleRestorePosition = () => {
+      if (activeOutputDeviceRef.current !== 'local') return
       const target = pendingSeekTargetRef.current
       pendingSeekTargetRef.current = null // 一次性立即消费，清空锁
       if (target != null && target > 0) {
@@ -2089,6 +2095,7 @@ const Player = () => {
 
     // Recover playback position on mobile Webview/tab resume if stream stalled or reset to 0
     const handleVisibilityOrResume = (evt) => {
+      if (activeOutputDeviceRef.current !== 'local') return
       const evtType = evt?.type || 'visibilitychange'
       logAudioGuard(
         `[Lifecycle:${evtType}] Event fired: visibilityState=${document.visibilityState}, onLine=${navigator.onLine}, needsNetworkResume=${needsNetworkResumeRef.current}, userPaused=${isUserExplicitlyPausedRef.current}`,
@@ -2145,18 +2152,21 @@ const Player = () => {
     }
 
     const handleStalled = () => {
+      if (activeOutputDeviceRef.current !== 'local') return
       warnAudioGuard(
         `[Audio:stalled] Buffer stalled at ${audioInstance?.currentTime?.toFixed(2)}s, readyState=${audioInstance?.readyState}, networkState=${audioInstance?.networkState}`,
       )
     }
 
     const handleWaiting = () => {
+      if (activeOutputDeviceRef.current !== 'local') return
       logAudioGuard(
         `[Audio:waiting] Waiting for media buffer at ${audioInstance?.currentTime?.toFixed(2)}s`,
       )
     }
 
     const handleError = () => {
+      if (activeOutputDeviceRef.current !== 'local') return
       const err = audioInstance?.error
       const errCode = err?.code
       warnAudioGuard(

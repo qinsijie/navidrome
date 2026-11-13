@@ -126,7 +126,7 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 		if strings.HasPrefix(mf.Path, "online://") {
 			// 0. Cache hit: direct disk stream with pacer
 			pacingRate := stream.CalculateAudioPacingRate(int64(mf.Size), mf.Duration, mf.Suffix)
-			pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 128*1024)
+			pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 1024*1024)
 			if musicengine.GetCacheManager().ServeCachedTrack(pw, r, mf.ID) {
 				return
 			}
@@ -224,7 +224,7 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 			)
 		}
 
-		pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 128*1024)
+		pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 1024*1024)
 		http.ServeContent(pw, r, fi.Name(), fi.ModTime(), f)
 	}
 
@@ -516,10 +516,13 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			} else if strings.HasPrefix(t.Stream, "/") {
 				t.Stream = fmt.Sprintf("http://%s:%d%s", outboundIP, port, t.Stream)
 			}
-			t.Stream = appendPCMModeIfHQPlayer(t.Stream, isHQPlayer, mgr)
-			if t.Duration <= 0 && t.TrackID != "" {
+			isDSD := false
+			if t.TrackID != "" {
 				if mf, err := api.ds.MediaFile().Get(r.Context(), t.TrackID); err == nil && mf != nil {
-					t.Duration = float64(mf.Duration)
+					isDSD = output.IsDSDMedia(mf.Suffix, mf.Path)
+					if t.Duration <= 0 {
+						t.Duration = float64(mf.Duration)
+					}
 					if t.Title == "" {
 						t.Title = mf.Title
 					}
@@ -530,6 +533,9 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 						t.Album = mf.Album
 					}
 				}
+			}
+			if !isDSD {
+				t.Stream = appendPCMModeIfHQPlayer(t.Stream, isHQPlayer, mgr)
 			}
 		}
 
@@ -663,8 +669,16 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 
 		if targetChannel == "remote" {
 			isHQPlayer := targetDev == "hqplayer" || mgr.GetActiveDevice() == "hqplayer"
-			resolvedURL = appendPCMModeIfHQPlayer(resolvedURL, isHQPlayer, mgr)
-			meta.Stream = resolvedURL
+			isDSD := false
+			if req.TrackID != "" {
+				if mf, err := api.ds.MediaFile().Get(r.Context(), req.TrackID); err == nil && mf != nil {
+					isDSD = output.IsDSDMedia(mf.Suffix, mf.Path)
+				}
+			}
+			if !isDSD {
+				resolvedURL = appendPCMModeIfHQPlayer(resolvedURL, isHQPlayer, mgr)
+				meta.Stream = resolvedURL
+			}
 			if isHQPlayer {
 				canAccess, owner := mgr.CheckHQPlayerAccess(user.ID, user.UserName, req.ForceTakeover)
 				if !canAccess {
