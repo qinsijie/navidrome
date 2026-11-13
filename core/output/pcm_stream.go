@@ -417,10 +417,19 @@ func ServePCMStream(w http.ResponseWriter, r *http.Request, mf *model.MediaFile,
 		return
 	}
 
-	// 3. Stream remaining PCM audio at 1.06x constant rate
+	// 3. Stream remaining PCM audio at 1.12x constant rate
 	buf := make([]byte, 4*1024)
-	written, _ := io.CopyBuffer(pw, io.LimitReader(stdout, remaining), buf)
+	written, copyErr := io.CopyBuffer(pw, io.LimitReader(stdout, remaining), buf)
 	remaining -= written
+
+	log.Info(r.Context(), "PCM Stream: Finished WAV stream",
+		"id", mf.ID,
+		"written", int64(firstN)+written,
+		"remaining", remaining,
+		"ctxErr", r.Context().Err(),
+		"copyErr", copyErr,
+		"stderr", strings.TrimSpace(stderrBuf.buf.String()),
+	)
 
 	// Pad minor rounding gap (e.g. duration rounded up by <5s) with silence so Content-Length matches exactly
 	if remaining > 0 && remaining <= int64(pcmFmt.ByteRate)*5 && r.Context().Err() == nil {

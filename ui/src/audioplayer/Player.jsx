@@ -164,6 +164,7 @@ const Player = () => {
   })
   const lastSyncedQueueKeyRef = useRef('')
   const remoteSyncLockUntilRef = useRef(0)
+  const lastSyncedRemotePlayingRef = useRef(null)
   const isSyntheticEventRef = useRef(false)
   const localQueueSnapshotRef = useRef(null)
   const isUserExplicitlyPausedRef = useRef(false)
@@ -1083,7 +1084,14 @@ const Player = () => {
         playMode: playerState.mode,
         autoPlay: shouldAutoPlay,
       }),
-    }).catch(() => {})
+    }).catch((err) => {
+      remoteProgressRef.current.playing = false
+      remoteSyncLockUntilRef.current = 0
+      notify(
+        `远端推流失败: ${err?.body?.message || err?.message || '请检查设备连接或推流配置'}`,
+        'error',
+      )
+    })
   }, [
     activeOutputDevice,
     playerState.queue,
@@ -1140,8 +1148,12 @@ const Player = () => {
               remoteProgressRef.current.trackId = json.track?.trackId || null
               remoteProgressRef.current.currentIndex = json.currentIndex ?? -1
 
-              // Synchronize play/pause button icon with server state without triggering onAudioPlay / onAudioPause network storm
-              if (audioInstance) {
+              // Synchronize play/pause button icon with server state only when it changes
+              if (
+                audioInstance &&
+                lastSyncedRemotePlayingRef.current !== isServerPlaying
+              ) {
+                lastSyncedRemotePlayingRef.current = isServerPlaying
                 isSyntheticEventRef.current = true
                 if (isServerPlaying) {
                   audioInstance.dispatchEvent(new Event('play'))
@@ -1414,7 +1426,10 @@ const Player = () => {
             return {
               ...item,
               singer: dur ? `${rawSinger} · ${dur}` : rawSinger,
-              musicSrc: item.musicSrc || SILENT_AUDIO_URI,
+              musicSrc:
+                activeOutputDevice !== 'local'
+                  ? SILENT_AUDIO_URI
+                  : item.musicSrc || SILENT_AUDIO_URI,
             }
           })
         : placeholderTracks,
@@ -1430,7 +1445,7 @@ const Player = () => {
       defaultVolume: isMobilePlayer ? 1 : playerState.volume,
       showMediaSession: !current.isRadio && hasQueue,
     }
-  }, [playerState, defaultOptions, isMobilePlayer, placeholderTracks])
+  }, [playerState, defaultOptions, isMobilePlayer, placeholderTracks, activeOutputDevice])
 
   const onAudioListsChange = useCallback(
     (_, audioLists, audioInfo) => dispatch(syncQueue(audioInfo, audioLists)),
@@ -1933,6 +1948,9 @@ const Player = () => {
     }
 
     const handlePlay = () => {
+      if (isSyntheticEventRef.current || activeOutputDeviceRef.current !== 'local') {
+        return
+      }
       isUserPausedRef.current = false
       isUserExplicitlyPausedRef.current = false
       needsNetworkResumeRef.current = false
