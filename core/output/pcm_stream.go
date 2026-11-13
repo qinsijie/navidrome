@@ -42,7 +42,10 @@ type PCMFormat struct {
 func ResolvePCMFormat(ctx context.Context, mf *model.MediaFile, localFilePath string) PCMFormat {
 	sr := mf.SampleRate
 	ch := mf.Channels
-	bd := mf.BitDepth
+	bd := 0
+	if mf.BitDepth != nil {
+		bd = *mf.BitDepth
+	}
 
 	if localFilePath != "" && (sr <= 0 || ch <= 0 || bd <= 0) {
 		if probe, err := ffmpeg.New().ProbeAudioStream(ctx, localFilePath); err == nil && probe != nil {
