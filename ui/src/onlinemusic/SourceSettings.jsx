@@ -36,6 +36,7 @@ import LinkIcon from '@material-ui/icons/Link'
 import StorageIcon from '@material-ui/icons/Storage'
 import ShareIcon from '@material-ui/icons/Share'
 import InsertDriveFileIcon from '@material-ui/icons/InsertDriveFile'
+import FileCopyIcon from '@material-ui/icons/FileCopy'
 import {
   getSources,
   uploadSource,
@@ -47,6 +48,7 @@ import {
   getOnlineCacheStats,
   setOnlineCacheConfig,
   clearOnlineCache,
+  getSourceDownloadUrl,
   downloadSourceScript,
 } from './api'
 
@@ -150,10 +152,12 @@ export const SourceSettings = () => {
   const [savingCache, setSavingCache] = useState(false)
   const [clearingCache, setClearingCache] = useState(false)
 
-  // Source share menu
+  // Source share menu & fallback export dialog
   const [shareAnchorEl, setShareAnchorEl] = useState(null)
   const [shareTargetItem, setShareTargetItem] = useState(null)
   const [sharingFile, setSharingFile] = useState(false)
+  const [exportDialogItem, setExportDialogItem] = useState(null)
+  const [copyingScript, setCopyingScript] = useState(false)
 
   // Hidden file input
   const fileInputRef = useRef(null)
@@ -321,52 +325,101 @@ export const SourceSettings = () => {
     }
   }
 
+  const triggerDirectHttpDownload = (item) => {
+    const directUrl = getSourceDownloadUrl(item.id)
+    const rawName = (item.name || item.id || 'source').trim()
+    const safeName = rawName.replace(/[/\\:*?"<>|]/g, '_') || item.id
+    const fileName = safeName.endsWith('.js') ? safeName : `${safeName}.js`
+
+    const a = document.createElement('a')
+    a.href = directUrl
+    a.download = fileName
+    a.style.display = 'none'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    return { directUrl, fileName }
+  }
+
   const handleShareFile = async (item) => {
     if (!item?.id) return
-    setSharingFile(true)
     setErrorMsg('')
-    try {
-      const { blob, fileName } = await downloadSourceScript(item.id)
-      const jsFile = new File([blob], fileName, {
-        type: 'application/javascript',
-      })
 
-      if (
-        typeof navigator !== 'undefined' &&
-        typeof navigator.canShare === 'function' &&
-        typeof navigator.share === 'function' &&
-        navigator.canShare({ files: [jsFile] })
-      ) {
-        try {
-          await navigator.share({
-            title: item.name || fileName,
-            text: `分享音源脚本：${item.name || fileName}`,
-            files: [jsFile],
-          })
-          setStatusMsg(`已调起系统文件分享：${fileName}`)
-          return
-        } catch (err) {
-          if (err && err.name === 'AbortError') return
+    // Tier 1: Modern mobile browsers supporting native File sharing
+    if (
+      typeof navigator !== 'undefined' &&
+      typeof navigator.canShare === 'function' &&
+      typeof navigator.share === 'function'
+    ) {
+      setSharingFile(true)
+      try {
+        const { blob, fileName } = await downloadSourceScript(item.id)
+        const jsFile = new File([blob], fileName, {
+          type: 'application/javascript',
+        })
+        if (navigator.canShare({ files: [jsFile] })) {
+          try {
+            await navigator.share({
+              title: item.name || fileName,
+              text: `分享音源脚本：${item.name || fileName}`,
+              files: [jsFile],
+            })
+            setStatusMsg(`已调起系统文件分享：${fileName}`)
+            return
+          } catch (err) {
+            if (err && err.name === 'AbortError') return
+          }
         }
+      } catch (err) {
+        // Fall through to Tier 2 + Tier 3
+      } finally {
+        setSharingFile(false)
       }
+    }
 
-      const blobUrl = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = blobUrl
-      a.download = fileName
-      a.style.display = 'none'
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
+    // Tier 2: Synchronously trigger real HTTP download (preserves user gesture)
+    const { fileName } = triggerDirectHttpDownload(item)
+    setStatusMsg(`已触发文件下载：${fileName}`)
 
-      setStatusMsg(
-        `已尝试下载 JS 文件（${fileName}）；若 App 内拦截下载，可点击右上角用系统浏览器打开后再导出`,
-      )
+    // Tier 3: Open fallback dialog for restricted WebViews (e.g. fnOS App)
+    setExportDialogItem(item)
+  }
+
+  const handleCopyScriptSource = async (item) => {
+    if (!item?.id) return
+    setCopyingScript(true)
+    try {
+      const { blob } = await downloadSourceScript(item.id)
+      const text = await blob.text()
+      const ok = await copyToClipboardCompat(text)
+      if (ok) {
+        setStatusMsg(`已复制「${item.name || item.id}」全部脚本源码，可粘贴保存为 .js 文件或转发`)
+        setExportDialogItem(null)
+      } else {
+        setErrorMsg('自动复制失败，请尝试复制下方下载地址到手机浏览器下载')
+      }
     } catch (err) {
-      setErrorMsg('导出分享 JS 文件失败: ' + err.message)
+      setErrorMsg('读取脚本源码失败: ' + err.message)
     } finally {
-      setSharingFile(false)
+      setCopyingScript(false)
+    }
+  }
+
+  const handleCopyDownloadUrl = async (item) => {
+    if (!item?.id) return
+    const relUrl = getSourceDownloadUrl(item.id)
+    let fullUrl = relUrl
+    try {
+      fullUrl = new URL(relUrl, window.location.origin).href
+    } catch {
+      // keep relative
+    }
+    const ok = await copyToClipboardCompat(fullUrl)
+    if (ok) {
+      setStatusMsg('已复制脚本下载地址，请粘贴到手机浏览器打开即可下载 .js 文件')
+      setExportDialogItem(null)
+    } else {
+      setErrorMsg('自动复制失败，请手动复制地址: ' + fullUrl)
     }
   }
 
@@ -810,6 +863,59 @@ export const SourceSettings = () => {
           </Box>
         </CardContent>
       </Card>
+
+      {/* 受限 WebView 导出/分享 JS 文件兜底弹窗 */}
+      <Dialog
+        open={Boolean(exportDialogItem)}
+        onClose={() => !copyingScript && setExportDialogItem(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>导出音源 JS 文件</DialogTitle>
+        <DialogContent>
+          <DialogContentText style={{ fontSize: '0.9rem', marginBottom: 16 }}>
+            已尝试触发浏览器下载「{exportDialogItem?.name || exportDialogItem?.id}.js」。
+            若在飞牛 App 内置 WebView 中被宿主拦截未弹出保存，可使用以下两种方式导出：
+          </DialogContentText>
+          <Box display="flex" flexDirection="column" style={{ gap: 10 }}>
+            <Button
+              variant="contained"
+              color="primary"
+              fullWidth
+              disabled={copyingScript}
+              startIcon={
+                copyingScript ? (
+                  <CircularProgress size={16} color="inherit" />
+                ) : (
+                  <FileCopyIcon />
+                )
+              }
+              onClick={() => handleCopyScriptSource(exportDialogItem)}
+              style={{ textTransform: 'none' }}
+            >
+              一键复制脚本源码
+            </Button>
+            <Button
+              variant="outlined"
+              color="primary"
+              fullWidth
+              startIcon={<LinkIcon />}
+              onClick={() => handleCopyDownloadUrl(exportDialogItem)}
+              style={{ textTransform: 'none' }}
+            >
+              复制下载地址（去手机浏览器粘贴下载）
+            </Button>
+          </Box>
+        </DialogContent>
+        <DialogActions style={{ padding: '8px 20px 14px' }}>
+          <Button
+            onClick={() => setExportDialogItem(null)}
+            disabled={copyingScript}
+          >
+            关闭
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* 网络导入对话框 */}
       <Dialog open={openUrlDialog} onClose={() => !importingUrl && setOpenUrlDialog(false)} maxWidth="sm" fullWidth>

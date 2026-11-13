@@ -1,4 +1,5 @@
 import { httpClient } from '../dataProvider'
+import { baseUrl } from '../utils'
 
 export const searchOnline = async (source, query, page = 1, limit = 30) => {
   const url = `/api/musicengine/search?source=${encodeURIComponent(source)}&query=${encodeURIComponent(query)}&page=${page}&limit=${limit}`
@@ -113,6 +114,18 @@ export const clearOnlineCache = async () => {
   return response.json
 }
 
+export const getSourceDownloadUrl = (id) => {
+  const path = baseUrl(
+    `/api/musicengine/sources/${encodeURIComponent(id)}/download`,
+  )
+  const token = localStorage.getItem('token')
+  if (token) {
+    const sep = path.includes('?') ? '&' : '?'
+    return `${path}${sep}jwt=${encodeURIComponent(token)}`
+  }
+  return path
+}
+
 export const downloadSourceScript = async (id) => {
   const token = localStorage.getItem('token')
   const headers = {}
@@ -120,7 +133,7 @@ export const downloadSourceScript = async (id) => {
     headers['x-nd-authorization'] = `Bearer ${token}`
   }
   const response = await fetch(
-    `/api/musicengine/sources/${encodeURIComponent(id)}/download`,
+    baseUrl(`/api/musicengine/sources/${encodeURIComponent(id)}/download`),
     { headers },
   )
   if (!response.ok) {
