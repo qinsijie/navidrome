@@ -636,6 +636,20 @@ func (m *Manager) playTrackOnDevice(ctx context.Context, deviceID string, meta T
 	return nil
 }
 
+func (m *Manager) AppendHQPlayerTrack(ctx context.Context, streamURL string) error {
+	m.mu.RLock()
+	hqCfg := m.hqConfig
+	m.mu.RUnlock()
+	return m.hqClient.AppendTrack(ctx, hqCfg, streamURL)
+}
+
+func (m *Manager) GetHQPlayerState(ctx context.Context) (int, int, error) {
+	m.mu.RLock()
+	hqCfg := m.hqConfig
+	m.mu.RUnlock()
+	return m.hqClient.GetState(ctx, hqCfg)
+}
+
 func (m *Manager) ControlPlaybackWithDetails(ctx context.Context, action string, index int, timeOffset float64, volume int, mode string) error {
 	activeID := m.GetActiveDevice()
 	if activeID != string(DeviceTypeLocal) && m.session != nil {

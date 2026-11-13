@@ -19,12 +19,15 @@ type PlayerSession struct {
 	deviceID     string
 	queue        []TrackMetadata
 	currentIndex int
-	state        string // "playing", "paused", "stopped"
-	epoch        uint64
-	startedAt    int64 // unix milli
-	timeOffset   float64
-	playMode     string // "order", "orderLoop", "singleLoop", "shufflePlay"
-	timer        *time.Timer
+	state         string // "playing", "paused", "stopped"
+	epoch         uint64
+	startedAt     int64 // unix milli
+	timeOffset    float64
+	playMode      string // "order", "orderLoop", "singleLoop", "shufflePlay"
+	timer         *time.Timer
+	preQueueTimer *time.Timer
+	hqpListIdx    int
+	hqpPollCount  int
 }
 
 func NewPlayerSession(mgr *Manager, deviceID string) *PlayerSession {
@@ -104,11 +107,18 @@ func (s *PlayerSession) SetQueue(tracks []TrackMetadata, startIndex int, timeOff
 	}
 
 	s.state = "playing"
+	s.hqpListIdx = 0
+	s.hqpPollCount = 0
 	track := s.queue[s.currentIndex]
 	s.armTimerLocked(track.Duration, timeOffset, curEpoch)
 	devID := s.deviceID
+	qLen := len(s.queue)
+	pMode := s.playMode
 	s.mu.Unlock()
 
+	RecordOutputDebug("session_set_queue", map[string]any{
+		"deviceId": devID, "queueLen": qLen, "startIdx": startIndex, "playMode": pMode, "id": track.TrackID,
+	})
 	log.Info(fmt.Sprintf("PlayerSession [%s]: SetQueue loaded %d tracks, starting at track %d: %s (%s)",
 		devID, len(tracks), startIndex, track.Title, track.Artist))
 
@@ -116,6 +126,11 @@ func (s *PlayerSession) SetQueue(tracks []TrackMetadata, startIndex int, timeOff
 }
 
 func (s *PlayerSession) playAndRollbackOnError(devID string, track TrackMetadata, timeOffset float64, expectedEpoch uint64) error {
+	s.mu.Lock()
+	s.hqpListIdx = 0
+	s.hqpPollCount = 0
+	s.mu.Unlock()
+
 	err := s.mgr.playTrackOnDevice(context.Background(), devID, track, timeOffset)
 	if err != nil {
 		s.mu.Lock()
@@ -320,12 +335,69 @@ func (s *PlayerSession) armTimerLocked(duration float64, offset float64, epoch u
 	s.timer = time.AfterFunc(timerDuration, func() {
 		s.onTrackEnded(epoch)
 	})
+
+	if s.deviceID == "hqplayer" {
+		preDelay := time.Duration((rem-15.0)*float64(time.Second))
+		if preDelay < 2*time.Second {
+			preDelay = 2 * time.Second
+		}
+		if preDelay < timerDuration {
+			s.preQueueTimer = time.AfterFunc(preDelay, func() {
+				s.preQueueNextHQPlayer(epoch)
+			})
+		}
+	}
 }
 
 func (s *PlayerSession) cancelTimerLocked() {
 	if s.timer != nil {
 		s.timer.Stop()
 		s.timer = nil
+	}
+	if s.preQueueTimer != nil {
+		s.preQueueTimer.Stop()
+		s.preQueueTimer = nil
+	}
+}
+
+func (s *PlayerSession) nextTrackIndexLocked() (int, bool) {
+	if len(s.queue) == 0 {
+		return 0, false
+	}
+	if s.playMode == "singleLoop" {
+		return s.currentIndex, true
+	}
+	nextIdx := s.currentIndex + 1
+	if nextIdx >= len(s.queue) {
+		if s.playMode == "orderLoop" {
+			return 0, true
+		}
+		return 0, false
+	}
+	return nextIdx, true
+}
+
+func (s *PlayerSession) preQueueNextHQPlayer(epoch uint64) {
+	s.mu.RLock()
+	if atomic.LoadUint64(&s.epoch) != epoch || s.state != "playing" || s.deviceID != "hqplayer" {
+		s.mu.RUnlock()
+		return
+	}
+	nextIdx, ok := s.nextTrackIndexLocked()
+	if !ok {
+		s.mu.RUnlock()
+		return
+	}
+	nextTrack := s.queue[nextIdx]
+	s.mu.RUnlock()
+
+	if nextTrack.Stream == "" {
+		return
+	}
+	if err := s.mgr.AppendHQPlayerTrack(context.Background(), nextTrack.Stream); err != nil {
+		RecordOutputDebug("hqp_prequeue_err", map[string]any{"nextIdx": nextIdx, "id": nextTrack.TrackID, "err": err.Error()})
+	} else {
+		RecordOutputDebug("hqp_prequeue", map[string]any{"nextIdx": nextIdx, "id": nextTrack.TrackID, "stream": nextTrack.Stream})
 	}
 }
 
@@ -336,42 +408,78 @@ func (s *PlayerSession) onTrackEnded(epoch uint64) {
 		return
 	}
 
-	var nextIdx int
-	if s.playMode == "singleLoop" {
-		nextIdx = s.currentIndex
-	} else {
-		nextIdx = s.currentIndex + 1
-		if nextIdx >= len(s.queue) {
-			if s.playMode == "orderLoop" && len(s.queue) > 0 {
-				nextIdx = 0
-			} else {
-				log.Info(fmt.Sprintf("PlayerSession [%s]: Auto-Advance completed all tracks in queue", s.deviceID))
-				s.state = "stopped"
-				s.startedAt = 0
-				s.timeOffset = 0
-				s.cancelTimerLocked()
-				atomic.AddUint64(&s.epoch, 1)
-				devID := s.deviceID
-				s.mu.Unlock()
-				_ = s.mgr.controlDevice(context.Background(), devID, "stop", 0, 0)
-				return
+	devID := s.deviceID
+	expectedHQPIdx := s.hqpListIdx
+	pollCount := s.hqpPollCount
+	s.mu.Unlock()
+
+	var hqpState, hqpTrack int
+	var hqpErr error
+	if devID == "hqplayer" {
+		hqpState, hqpTrack, hqpErr = s.mgr.GetHQPlayerState(context.Background())
+		if hqpErr == nil && hqpState == 2 && hqpTrack <= expectedHQPIdx && pollCount < 30 {
+			s.mu.Lock()
+			if atomic.LoadUint64(&s.epoch) == epoch && s.state == "playing" {
+				s.hqpPollCount++
+				s.timer = time.AfterFunc(1*time.Second, func() {
+					s.onTrackEnded(epoch)
+				})
 			}
+			s.mu.Unlock()
+			return
 		}
 	}
 
+	s.mu.Lock()
+	if atomic.LoadUint64(&s.epoch) != epoch || s.state != "playing" {
+		s.mu.Unlock()
+		return
+	}
+
+	nextIdx, ok := s.nextTrackIndexLocked()
+	if !ok {
+		log.Info(fmt.Sprintf("PlayerSession [%s]: Auto-Advance completed all tracks in queue", s.deviceID))
+		s.state = "stopped"
+		s.startedAt = 0
+		s.timeOffset = 0
+		s.cancelTimerLocked()
+		atomic.AddUint64(&s.epoch, 1)
+		s.mu.Unlock()
+		_ = s.mgr.controlDevice(context.Background(), devID, "stop", 0, 0)
+		return
+	}
+
+	fromIdx := s.currentIndex
 	curEpoch := atomic.AddUint64(&s.epoch, 1)
 	s.currentIndex = nextIdx
 	s.timeOffset = 0
 	s.startedAt = time.Now().UnixMilli()
+	s.hqpPollCount = 0
 	track := s.queue[nextIdx]
+	qLen := len(s.queue)
+	pMode := s.playMode
+
+	gapless := devID == "hqplayer" && hqpErr == nil && hqpState == 2 && hqpTrack > expectedHQPIdx
+	if gapless {
+		s.hqpListIdx = hqpTrack
+	} else {
+		s.hqpListIdx = 0
+	}
 	s.armTimerLocked(track.Duration, 0, curEpoch)
-	devID := s.deviceID
 	s.mu.Unlock()
 
-	log.Info(fmt.Sprintf("PlayerSession [%s] Auto-Advance (mode=%s): playing track %d/%d: %s - %s (%.1fs)",
-		devID, s.playMode, nextIdx+1, len(s.queue), track.Title, track.Artist, track.Duration))
+	RecordOutputDebug("session_advance", map[string]any{
+		"deviceId": devID, "fromIdx": fromIdx, "toIdx": nextIdx, "queueLen": qLen, "playMode": pMode, "gapless": gapless, "id": track.TrackID,
+	})
+	log.Info(fmt.Sprintf("PlayerSession [%s] Auto-Advance (mode=%s, gapless=%v): playing track %d/%d: %s - %s (%.1fs)",
+		devID, pMode, gapless, nextIdx+1, qLen, track.Title, track.Artist, track.Duration))
 
-	_ = s.mgr.playTrackOnDevice(context.Background(), devID, track, 0)
+	if gapless {
+		RecordOutputDebug("hqp_gapless", map[string]any{"toIdx": nextIdx, "hqpTrack": hqpTrack, "id": track.TrackID})
+		return
+	}
+
+	_ = s.playAndRollbackOnError(devID, track, 0, curEpoch)
 }
 
 func (s *PlayerSession) GetStatus() NowPlayingInfo {

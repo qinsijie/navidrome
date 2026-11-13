@@ -158,6 +158,7 @@ const Player = () => {
   const isQueueOpenRef = useRef(false)
   const isHiddenRef = useRef(false)
   const isSwitchingTargetRef = useRef(false)
+  const isServerSyncRef = useRef(false)
   const saveTerminalQueueTimerRef = useRef(null)
   const virtualSecRef = useRef(0)
   const remoteProgressRef = useRef({
@@ -1059,7 +1060,7 @@ const Player = () => {
     if (activeOutputDevice === 'local' || activeOutputDeviceRef.current === 'local') {
       return
     }
-    // Block automatic queue overwrite when switching output target
+    // Block automatic queue overwrite when switching output target or syncing from server
     if (isSwitchingTargetRef.current) {
       return
     }
@@ -1069,6 +1070,10 @@ const Player = () => {
     const currentIdx =
       playerState.playIndex ?? playerState.savedPlayIndex ?? 0
     const queueKey = `remote_${targetDevice}_${playerState.queue.map((t) => t.trackId).join(',')}_${currentIdx}_${playerState.mode}`
+    if (isServerSyncRef.current) {
+      lastSyncedQueueKeyRef.current = queueKey
+      return
+    }
     if (lastSyncedQueueKeyRef.current === queueKey) return
     lastSyncedQueueKeyRef.current = queueKey
 
@@ -1211,6 +1216,9 @@ const Player = () => {
                   playerStateRef.current.current?.trackId !== json.track?.trackId)
               ) {
                 const newTrack = queue[serverIdx]
+                const syncMode = playerStateRef.current.mode || 'orderLoop'
+                lastSyncedQueueKeyRef.current = `remote_${activeOutputDeviceRef.current}_${queue.map((t) => t.trackId).join(',')}_${serverIdx}_${syncMode}`
+                isServerSyncRef.current = true
                 dispatch(currentPlaying(newTrack))
                 currentTrackIdRef.current = newTrack.trackId
                 setCurrentTrackId(newTrack.trackId)
@@ -1224,6 +1232,9 @@ const Player = () => {
                     // ignore
                   }
                 }
+                setTimeout(() => {
+                  isServerSyncRef.current = false
+                }, 200)
               }
             }
           })

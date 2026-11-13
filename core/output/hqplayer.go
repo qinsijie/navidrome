@@ -260,9 +260,34 @@ func (c *HQPlayerClient) Control(ctx context.Context, cfg HQPlayerConfig, action
 
 // CheckStatus verifies if the HQPlayer node is reachable and responds to <State/>
 func (c *HQPlayerClient) CheckStatus(ctx context.Context, cfg HQPlayerConfig) bool {
+	_, _, err := c.GetState(ctx, cfg)
+	return err == nil
+}
+
+func parseXMLIntAttr(xmlResp, attr string) (int, bool) {
+	key := attr + `="`
+	idx := strings.Index(xmlResp, key)
+	if idx == -1 {
+		return 0, false
+	}
+	rest := xmlResp[idx+len(key):]
+	end := strings.IndexByte(rest, '"')
+	if end <= 0 {
+		return 0, false
+	}
+	var val int
+	if _, err := fmt.Sscanf(rest[:end], "%d", &val); err != nil {
+		return 0, false
+	}
+	return val, true
+}
+
+// GetState queries HQPlayer <State/> and returns (state, trackIndex, err).
+// In HQPlayer XML API: state 0=stopped, 1=paused, 2=playing; track is 0-based playlist index.
+func (c *HQPlayerClient) GetState(ctx context.Context, cfg HQPlayerConfig) (int, int, error) {
 	host := strings.TrimSpace(cfg.Host)
 	if host == "" {
-		return false
+		return 0, -1, fmt.Errorf("HQPlayer host not configured")
 	}
 	port := cfg.Port
 	if port <= 0 {
@@ -272,18 +297,62 @@ func (c *HQPlayerClient) CheckStatus(ctx context.Context, cfg HQPlayerConfig) bo
 	d := net.Dialer{Timeout: 1500 * time.Millisecond}
 	conn, err := d.DialContext(ctx, "tcp", target)
 	if err != nil {
-		return false
+		return 0, -1, err
 	}
 	defer conn.Close()
 
 	_ = conn.SetDeadline(time.Now().Add(1500 * time.Millisecond))
 	if _, err := conn.Write([]byte("<State/>\n")); err != nil {
-		return false
+		return 0, -1, err
 	}
 	reader := bufio.NewReader(conn)
 	resp, err := reader.ReadString('\n')
 	if err != nil {
-		return false
+		return 0, -1, err
 	}
-	return strings.Contains(resp, "<State")
+	if !strings.Contains(resp, "<State") {
+		return 0, -1, fmt.Errorf("unexpected HQPlayer State response: %s", strings.TrimSpace(resp))
+	}
+	stateVal, _ := parseXMLIntAttr(resp, "state")
+	trackVal, ok := parseXMLIntAttr(resp, "track")
+	if !ok {
+		trackVal = -1
+	}
+	return stateVal, trackVal, nil
+}
+
+// AppendTrack queues the next track URI into HQPlayer's active playlist without stopping playback.
+func (c *HQPlayerClient) AppendTrack(ctx context.Context, cfg HQPlayerConfig, streamURL string) error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	if strings.TrimSpace(cfg.Host) == "" {
+		return fmt.Errorf("HQPlayer host not configured")
+	}
+	port := cfg.Port
+	if port <= 0 {
+		port = DefaultHQPlayerPort
+	}
+	target := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", port))
+	d := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", target)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	cmd := fmt.Sprintf(`<PlaylistAdd uri="%s"/>`+"\n", escapeXML(streamURL))
+	if _, err := conn.Write([]byte(cmd)); err != nil {
+		return err
+	}
+	reader := bufio.NewReader(conn)
+	resp, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(resp, `result="OK"`) {
+		return fmt.Errorf("hqplayer AppendTrack failed: %s", strings.TrimSpace(resp))
+	}
+	return nil
 }
