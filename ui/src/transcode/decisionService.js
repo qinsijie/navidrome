@@ -2,6 +2,15 @@ import { jwtDecode } from 'jwt-decode'
 import subsonic from '../subsonic'
 import { baseUrl } from '../utils'
 
+export const DIRECT_STREAM_FORMATS = new Set([
+  'flac',
+  'mp3',
+  'aac',
+  'm4a',
+  'ogg',
+  'wav',
+])
+
 // Decode the exp claim from a JWT token (no signature verification needed client-side).
 // The JWT token is meant to be opaque to the client, we are only allowing ourselves to do
 // this here because the UI is tightly integrated with the server; normally we would
@@ -84,8 +93,11 @@ export function createDecisionService(fetchFn) {
     return baseUrl(subsonic.url('getTranscodeStream', null, params))
   }
 
-  async function resolveStreamUrl(songId) {
+  async function resolveStreamUrl(songId, suffix) {
     if (songId && songId.startsWith('online:')) {
+      return baseUrl(subsonic.streamUrl(songId))
+    }
+    if (suffix && DIRECT_STREAM_FORMATS.has(String(suffix).toLowerCase())) {
       return baseUrl(subsonic.streamUrl(songId))
     }
     const decision = await getDecision(songId)

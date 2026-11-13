@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid'
 import subsonic from '../subsonic'
-import { decisionService } from '../transcode'
+import { decisionService, DIRECT_STREAM_FORMATS } from '../transcode'
 import { sanitizeImageUrl } from '../utils'
 import {
   PLAYER_ADD_TRACKS,
@@ -33,11 +33,16 @@ const pad = (value) => {
   }
 }
 
-const makeMusicSrc = (trackId) => {
+const makeMusicSrc = (trackId, suffix) => {
   if (!trackId) {
     return 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
   }
   if (trackId.startsWith('online:')) {
+    return subsonic.streamUrl(trackId)
+  }
+  // Prefer native direct stream (/rest/stream) for formats natively supported by mobile browsers
+  // Supports HTTP Range requests & full-file pre-buffering, avoiding real-time transcode drops on screen-off
+  if (suffix && DIRECT_STREAM_FORMATS.has(String(suffix).toLowerCase())) {
     return subsonic.streamUrl(trackId)
   }
   if (!decisionService.getProfile()) {
@@ -51,7 +56,7 @@ const makeMusicSrc = (trackId) => {
   }
   return () =>
     decisionService
-      .resolveStreamUrl(trackId)
+      .resolveStreamUrl(trackId, suffix)
       .catch(() => subsonic.streamUrl(trackId))
 }
 
@@ -101,7 +106,7 @@ const mapToAudioLists = (item) => {
     lyric: lyricText,
     singer: item.artist,
     duration: item.duration,
-    musicSrc: makeMusicSrc(trackId),
+    musicSrc: makeMusicSrc(trackId, item.suffix),
     cover: sanitizeImageUrl(
       item.cover ||
         item.coverUrl ||

@@ -35,7 +35,11 @@ import locale from './locale'
 import { keyMap } from '../hotkeys'
 import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
-import { detectBrowserProfile, decisionService } from '../transcode'
+import {
+  detectBrowserProfile,
+  decisionService,
+  DIRECT_STREAM_FORMATS,
+} from '../transcode'
 import { httpClient } from '../dataProvider'
 
 class PlayerErrorBoundary extends React.Component {
@@ -487,15 +491,20 @@ const Player = () => {
 
     const state = playerStateRef.current
     const currentIdx = state.savedPlayIndex || 0
-    const trackIds = state.queue
+    const itemsToResolve = state.queue
       .slice(currentIdx, currentIdx + 4)
       .filter(
         (item) =>
-          !item.isRadio && item.trackId && !item.trackId.startsWith('online:'),
+          !item.isRadio &&
+          item.trackId &&
+          !item.trackId.startsWith('online:') &&
+          !(
+            item.song?.suffix &&
+            DIRECT_STREAM_FORMATS.has(String(item.song.suffix).toLowerCase())
+          ),
       )
-      .map((item) => item.trackId)
 
-    if (trackIds.length === 0) {
+    if (itemsToResolve.length === 0) {
       if (activeOutputDeviceRef.current === 'local' && (!state.queue || state.queue.length === 0)) {
         httpClient('/api/player/terminal-queue')
           .then(({ json }) => {
@@ -543,8 +552,10 @@ const Player = () => {
     }
 
     Promise.allSettled(
-      trackIds.map((id) =>
-        decisionService.resolveStreamUrl(id).then((url) => [id, url]),
+      itemsToResolve.map((item) =>
+        decisionService
+          .resolveStreamUrl(item.trackId, item.song?.suffix)
+          .then((url) => [item.trackId, url]),
       ),
     ).then((results) => {
       const resolvedUrls = {}
@@ -566,7 +577,13 @@ const Player = () => {
       .slice(currentIdx + 1, currentIdx + 4)
       .filter(
         (item) =>
-          !item.isRadio && item.trackId && !item.trackId.startsWith('online:'),
+          !item.isRadio &&
+          item.trackId &&
+          !item.trackId.startsWith('online:') &&
+          !(
+            item.song?.suffix &&
+            DIRECT_STREAM_FORMATS.has(String(item.song.suffix).toLowerCase())
+          ),
       )
       .map((item) => item.trackId)
 
@@ -2045,6 +2062,27 @@ const Player = () => {
         currentTrackIdRef.current
       ) {
         const curTrackId = currentTrackIdRef.current
+        const timeSinceReanchor = Date.now() - (lastReanchorTimeRef.current || 0)
+        const isFastFail =
+          lastReanchorTimeRef.current > 0 && timeSinceReanchor < 500
+        const isBackgroundOrOffline =
+          document.visibilityState === 'hidden' || !navigator.onLine
+
+        // If error occurs while in background / offline or failed immediately (< 500ms) after reanchor:
+        // Do NOT waste retry quota or trigger background auto-skip!
+        // Lock breakpoint & mark needsNetworkResumeRef so it resumes cleanly upon visibility/online recovery.
+        if (isBackgroundOrOffline || isFastFail) {
+          const bpSec = (lastPositionMsRef.current || 0) / 1000
+          if (bpSec > 0) {
+            pendingSeekTargetRef.current = bpSec
+          }
+          needsNetworkResumeRef.current = true
+          warnAudioGuard(
+            `[Audio:error] Background/offline/fast-fail (${timeSinceReanchor}ms) detected (code=${errCode}). Preserving retry quota, locking breakpoint=${bpSec.toFixed(2)}s, awaiting visibility/online recovery.`,
+          )
+          return
+        }
+
         const retries = trackErrorCountRef.current[curTrackId] || 0
 
         // If error code is 4 (format error) or 2 (network error)
@@ -2060,6 +2098,10 @@ const Player = () => {
               activeOutputDeviceRef.current === 'local' &&
               !isUserExplicitlyPausedRef.current
             ) {
+              if (document.visibilityState === 'hidden' || !navigator.onLine) {
+                needsNetworkResumeRef.current = true
+                return
+              }
               reanchorAudioStream(
                 audioInstance,
                 (lastPositionMsRef.current || 0) / 1000,
