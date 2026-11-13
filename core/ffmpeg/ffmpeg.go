@@ -601,6 +601,30 @@ func ffprobePath(ffmpegCmd string) string {
 	return filepath.Join(dir, strings.Replace(base, "ffmpeg", "ffprobe", 1))
 }
 
+func isExecutableFile(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir() && info.Mode()&0111 != 0
+}
+
+func findFFmpegFallback() string {
+	candidates := []string{
+		"/usr/trim/bin/ffmpeg",
+		"/usr/bin/ffmpeg",
+		"/usr/local/bin/ffmpeg",
+		"/var/apps/ffmpeg/target/bin/ffmpeg",
+		"/opt/bin/ffmpeg",
+	}
+	if globbed, err := filepath.Glob("/var/apps/*/target/bin/ffmpeg"); err == nil {
+		candidates = append(candidates, globbed...)
+	}
+	for _, p := range candidates {
+		if isExecutableFile(p) {
+			return p
+		}
+	}
+	return ""
+}
+
 func ffmpegCmd() (string, error) {
 	ffOnce.Do(func() {
 		if conf.Server.FFmpegPath != "" {
@@ -611,6 +635,12 @@ func ffmpegCmd() (string, error) {
 			if errors.Is(ffmpegErr, exec.ErrDot) {
 				log.Trace("ffmpeg found in current folder '.'")
 				ffmpegPath, ffmpegErr = exec.LookPath("./ffmpeg")
+			}
+			if ffmpegErr != nil {
+				if fb := findFFmpegFallback(); fb != "" {
+					ffmpegPath = fb
+					ffmpegErr = nil
+				}
 			}
 		}
 		if ffmpegErr == nil {

@@ -80,6 +80,17 @@ func resolveOutboundURL(r *http.Request, rawURL string, targetHost string) strin
 	return output.ResolveOutboundURL(r, rawURL, conf.Server.Port, targetHost)
 }
 
+func appendFormatParam(streamURL, suffix string) string {
+	ext := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(suffix), "."))
+	if ext == "" || streamURL == "" || !strings.Contains(streamURL, "/api/output/stream/") || strings.Contains(streamURL, "format=") {
+		return streamURL
+	}
+	if strings.Contains(streamURL, "?") {
+		return streamURL + "&format=" + ext
+	}
+	return streamURL + "?format=" + ext
+}
+
 func appendPCMModeIfHQPlayer(streamURL string, isHQPlayer bool, mgr *output.Manager) string {
 	if !isHQPlayer || streamURL == "" || mgr.GetHQPlayerConfig().StreamMode == "raw" {
 		return streamURL
@@ -140,6 +151,7 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 				resolved, err := engine.ResolveStreamURL(r.Context(), source, songID, quality)
 				if err != nil {
 					log.Error(r.Context(), "Audio Stream: Failed to resolve online stream URL", "id", id, err)
+					output.RecordOutputDebug("raw_stream_err", map[string]any{"id": id, "stage": "resolve", "err": err.Error(), "ua": r.UserAgent()})
 					http.Error(w, "stream resolve error: "+err.Error(), http.StatusBadGateway)
 					return
 				}
@@ -147,9 +159,11 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 				defer relay.Close()
 				if err := relay.StartPull(r.Context(), 0); err != nil {
 					log.Error(r.Context(), "Audio Stream: Failed to connect to online audio CDN", "id", id, err)
+					output.RecordOutputDebug("raw_stream_err", map[string]any{"id": id, "stage": "pull", "err": err.Error(), "ua": r.UserAgent()})
 					http.Error(w, "stream relay pull error: "+err.Error(), http.StatusBadGateway)
 					return
 				}
+				output.RecordOutputDebug("raw_stream", map[string]any{"id": id, "method": r.Method, "range": r.Header.Get("Range"), "online": true, "ua": r.UserAgent()})
 				relay.ServeHTTP(pw, r)
 				return
 			}
@@ -158,6 +172,7 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 		filePath := mf.AbsolutePath()
 		f, err := os.Open(filePath)
 		if err != nil {
+			output.RecordOutputDebug("raw_stream_err", map[string]any{"id": id, "stage": "open", "err": err.Error(), "ua": r.UserAgent()})
 			http.Error(w, "file not found: "+err.Error(), http.StatusNotFound)
 			return
 		}
@@ -225,6 +240,7 @@ func (api *Router) addPublicOutputRoutes(r chi.Router) {
 		}
 
 		pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 1024*1024)
+		output.RecordOutputDebug("raw_stream", map[string]any{"id": id, "method": r.Method, "range": r.Header.Get("Range"), "mime": mimeType, "ua": r.UserAgent()})
 		http.ServeContent(pw, r, fi.Name(), fi.ModTime(), f)
 	}
 
@@ -527,6 +543,7 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			if t.TrackID != "" {
 				if mf, err := api.ds.MediaFile().Get(r.Context(), t.TrackID); err == nil && mf != nil {
 					isDSD = output.IsDSDMedia(mf.Suffix, mf.Path)
+					t.Stream = appendFormatParam(t.Stream, mf.Suffix)
 					if t.Duration <= 0 {
 						t.Duration = float64(mf.Duration)
 					}
@@ -641,9 +658,12 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 
 		resolvedURL := resolveOutboundURL(r, req.StreamURL, mgr.GetActiveTargetHost())
 		duration := req.Duration
-		if duration <= 0 && req.TrackID != "" {
+		if req.TrackID != "" {
 			if mf, err := api.ds.MediaFile().Get(r.Context(), req.TrackID); err == nil && mf != nil {
-				duration = float64(mf.Duration)
+				resolvedURL = appendFormatParam(resolvedURL, mf.Suffix)
+				if duration <= 0 {
+					duration = float64(mf.Duration)
+				}
 				if req.Title == "" {
 					req.Title = mf.Title
 				}

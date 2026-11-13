@@ -320,9 +320,10 @@ func ServePCMStream(w http.ResponseWriter, r *http.Request, mf *model.MediaFile,
 		"contentLen", contentLen,
 		"burstKB", burstBytes/1024,
 	)
+	ffmpegPath, ffmpegErr := ffmpeg.New().CmdPath()
 	RecordOutputDebug("pcm_start", map[string]any{
 		"id": mf.ID, "range": r.Header.Get("Range"), "sr": pcmFmt.SampleRate, "bd": pcmFmt.BitDepth,
-		"contentLen": contentLen, "ua": r.UserAgent(),
+		"contentLen": contentLen, "ua": r.UserAgent(), "ffmpegPath": ffmpegPath,
 	})
 
 	// Fast path: client only requested bytes inside the WAV header
@@ -361,10 +362,9 @@ func ServePCMStream(w http.ResponseWriter, r *http.Request, mf *model.MediaFile,
 		defer relay.Close()
 	}
 
-	ffmpegPath, err := ffmpeg.New().CmdPath()
-	if err != nil {
-		log.Error(r.Context(), "PCM Stream: ffmpeg unavailable", err)
-		RecordOutputDebug("pcm_error", map[string]any{"id": mf.ID, "stage": "ffmpeg_path", "err": err.Error()})
+	if ffmpegErr != nil {
+		log.Error(r.Context(), "PCM Stream: ffmpeg unavailable", ffmpegErr)
+		RecordOutputDebug("pcm_error", map[string]any{"id": mf.ID, "stage": "ffmpeg_path", "err": ffmpegErr.Error()})
 		http.Error(w, "ffmpeg unavailable", http.StatusInternalServerError)
 		return
 	}

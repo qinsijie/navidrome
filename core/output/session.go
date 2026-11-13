@@ -112,7 +112,23 @@ func (s *PlayerSession) SetQueue(tracks []TrackMetadata, startIndex int, timeOff
 	log.Info(fmt.Sprintf("PlayerSession [%s]: SetQueue loaded %d tracks, starting at track %d: %s (%s)",
 		devID, len(tracks), startIndex, track.Title, track.Artist))
 
-	return s.mgr.playTrackOnDevice(context.Background(), devID, track, timeOffset)
+	return s.playAndRollbackOnError(devID, track, timeOffset, curEpoch)
+}
+
+func (s *PlayerSession) playAndRollbackOnError(devID string, track TrackMetadata, timeOffset float64, expectedEpoch uint64) error {
+	err := s.mgr.playTrackOnDevice(context.Background(), devID, track, timeOffset)
+	if err != nil {
+		s.mu.Lock()
+		if atomic.LoadUint64(&s.epoch) == expectedEpoch {
+			s.cancelTimerLocked()
+			atomic.AddUint64(&s.epoch, 1)
+			s.state = "stopped"
+			s.startedAt = 0
+		}
+		s.mu.Unlock()
+		log.Error(fmt.Sprintf("PlayerSession [%s]: playTrackOnDevice failed, rolled back state to stopped", devID), err)
+	}
+	return err
 }
 
 func (s *PlayerSession) Enqueue(tracks []TrackMetadata) {
@@ -144,7 +160,7 @@ func (s *PlayerSession) PlayTrackAt(index int, timeOffset float64) error {
 	s.mu.Unlock()
 
 	log.Info(fmt.Sprintf("PlayerSession [%s]: Switched to track %d/%d: %s - %s", devID, index+1, len(s.queue), track.Title, track.Artist))
-	return s.mgr.playTrackOnDevice(context.Background(), devID, track, timeOffset)
+	return s.playAndRollbackOnError(devID, track, timeOffset, curEpoch)
 }
 
 func (s *PlayerSession) Next(manual bool) error {
@@ -173,7 +189,7 @@ func (s *PlayerSession) Next(manual bool) error {
 	s.mu.Unlock()
 
 	log.Info(fmt.Sprintf("PlayerSession [%s] Next: track %d/%d: %s - %s", devID, nextIdx+1, len(s.queue), track.Title, track.Artist))
-	return s.mgr.playTrackOnDevice(context.Background(), devID, track, 0)
+	return s.playAndRollbackOnError(devID, track, 0, curEpoch)
 }
 
 func (s *PlayerSession) Prev() error {
@@ -209,7 +225,7 @@ func (s *PlayerSession) Prev() error {
 	s.mu.Unlock()
 
 	log.Info(fmt.Sprintf("PlayerSession [%s] Prev: track %d/%d: %s - %s", devID, targetIdx+1, len(s.queue), track.Title, track.Artist))
-	return s.mgr.playTrackOnDevice(context.Background(), devID, track, 0)
+	return s.playAndRollbackOnError(devID, track, 0, curEpoch)
 }
 
 func (s *PlayerSession) Pause() error {
@@ -248,7 +264,7 @@ func (s *PlayerSession) Resume() error {
 	s.mu.Unlock()
 
 	log.Info(fmt.Sprintf("PlayerSession [%s]: Resumed track %d (%s) from offset %.1fs", devID, s.currentIndex, track.Title, offset))
-	return s.mgr.playTrackOnDevice(context.Background(), devID, track, offset)
+	return s.playAndRollbackOnError(devID, track, offset, curEpoch)
 }
 
 func (s *PlayerSession) Stop() error {

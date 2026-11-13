@@ -133,7 +133,13 @@ const Player = () => {
   const [currentTrackId, setCurrentTrackId] = useState(null)
   const [heartbeatTrackId, setHeartbeatTrackId] = useState(null)
   const [audioInstance, setAudioInstance] = useState(null)
-  const [activeOutputDevice, setActiveOutputDevice] = useState('local')
+  const [activeOutputDevice, setActiveOutputDevice] = useState(() => {
+    try {
+      return localStorage.getItem('nd_active_output_device') || 'local'
+    } catch {
+      return 'local'
+    }
+  })
   const [context, setContext] = useState(null)
   const [gainNode, setGainNode] = useState(null)
 
@@ -524,7 +530,10 @@ const Player = () => {
                 cover: sanitizeImageUrl(
                   t.cover || t.coverUrl || subsonic.getCoverArtUrl({ id: t.trackId }, 300),
                 ),
-                musicSrc: subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
+                musicSrc:
+            activeOutputDeviceRef.current !== 'local'
+              ? ''
+              : subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
                 song: {
                   id: t.trackId,
                   title: t.title,
@@ -617,7 +626,10 @@ const Player = () => {
           },
           singer: t.artist,
           duration: t.duration,
-          musicSrc: subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
+          musicSrc:
+            activeOutputDeviceRef.current !== 'local'
+              ? ''
+              : subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
           cover: sanitizeImageUrl(
             t.cover || t.coverUrl || subsonic.getCoverArtUrl({ id: t.trackId }, 300),
           ),
@@ -770,18 +782,30 @@ const Player = () => {
 
       setActiveOutputDevice(newId)
       activeOutputDeviceRef.current = newId
+      try {
+        localStorage.setItem('nd_active_output_device', newId)
+      } catch {
+        // ignore storage errors
+      }
       if (e.detail?.device?.name) {
         activeDeviceNameRef.current = e.detail.device.name
       }
       const isNowRemote = newId !== 'local'
       if (isNowRemote) {
         isSwitchingTargetRef.current = true
-        // 1. Pause and mute local audio instance
+        // 1. Pause, mute, and detach any residual stream from local audio instance
         if (audioInstanceRef.current) {
           isSyntheticEventRef.current = true
-          audioInstanceRef.current.pause()
-          audioInstanceRef.current.muted = true
-          isSyntheticEventRef.current = false
+          try {
+            audioInstanceRef.current.pause()
+            audioInstanceRef.current.muted = true
+            if (audioInstanceRef.current.getAttribute('src')) {
+              audioInstanceRef.current.removeAttribute('src')
+              audioInstanceRef.current.load()
+            }
+          } finally {
+            isSyntheticEventRef.current = false
+          }
         }
 
         // Save local queue snapshot before switching to remote view
@@ -865,7 +889,10 @@ const Player = () => {
                   singer: t.artist,
                   duration: t.duration,
                   cover: sanitizeImageUrl(t.cover || t.coverUrl || subsonic.getCoverArtUrl({ id: t.trackId }, 300)),
-                  musicSrc: subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
+                  musicSrc:
+            activeOutputDeviceRef.current !== 'local'
+              ? ''
+              : subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
                   song: {
                     id: t.trackId,
                     title: t.title,
@@ -951,7 +978,17 @@ const Player = () => {
     if (!audioInstance) return
 
     if (activeOutputDevice !== 'local') {
-      audioInstance.muted = true
+      isSyntheticEventRef.current = true
+      try {
+        audioInstance.pause()
+        audioInstance.muted = true
+        if (audioInstance.getAttribute('src')) {
+          audioInstance.removeAttribute('src')
+          audioInstance.load()
+        }
+      } finally {
+        isSyntheticEventRef.current = false
+      }
       return
     }
 

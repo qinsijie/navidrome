@@ -602,7 +602,13 @@ func (m *Manager) playTrackOnDevice(ctx context.Context, deviceID string, meta T
 	}
 
 	if deviceID == "hqplayer" {
-		return m.hqClient.PlayRawStream(ctx, hqCfg, meta.Stream, meta, timeOffset)
+		err := m.hqClient.PlayRawStream(ctx, hqCfg, meta.Stream, meta, timeOffset)
+		if err != nil {
+			RecordOutputDebug("hqp_err", map[string]any{"id": meta.TrackID, "stream": meta.Stream, "err": err.Error()})
+		} else {
+			RecordOutputDebug("hqp_play", map[string]any{"id": meta.TrackID, "stream": meta.Stream, "offset": timeOffset})
+		}
+		return err
 	}
 
 	m.dlnaScanner.mu.RLock()
@@ -610,18 +616,23 @@ func (m *Manager) playTrackOnDevice(ctx context.Context, deviceID string, meta T
 	m.dlnaScanner.mu.RUnlock()
 
 	if !ok || dev.ControlURL == "" {
-		return fmt.Errorf("DLNA device %s not found or offline", deviceID)
+		err := fmt.Errorf("DLNA device %s not found or offline", deviceID)
+		RecordOutputDebug("dlna_err", map[string]any{"deviceId": deviceID, "stage": "lookup", "err": err.Error()})
+		return err
 	}
 
 	if err := SetAVTransportURI(ctx, m.httpClient, dev.ControlURL, meta.Stream, meta.Title, meta.Artist); err != nil {
+		RecordOutputDebug("dlna_err", map[string]any{"deviceId": deviceID, "stage": "set_uri", "stream": meta.Stream, "err": err.Error()})
 		return fmt.Errorf("set av transport uri: %w", err)
 	}
 	if err := Play(ctx, m.httpClient, dev.ControlURL); err != nil {
+		RecordOutputDebug("dlna_err", map[string]any{"deviceId": deviceID, "stage": "play", "stream": meta.Stream, "err": err.Error()})
 		return err
 	}
 	if timeOffset > 0 {
 		_ = Seek(ctx, m.httpClient, dev.ControlURL, timeOffset)
 	}
+	RecordOutputDebug("dlna_play", map[string]any{"deviceId": deviceID, "id": meta.TrackID, "stream": meta.Stream, "offset": timeOffset})
 	return nil
 }
 
@@ -678,6 +689,8 @@ func (m *Manager) controlDevice(ctx context.Context, deviceID string, action str
 		m.playbackStartTime = time.Now().UnixMilli()
 	}
 	hqCfg := m.hqConfig
+	curTrack := m.currentTrack
+	curOffset := m.currentTimeOffset
 	m.mu.Unlock()
 
 	if deviceID == "" || deviceID == string(DeviceTypeLocal) {
@@ -685,7 +698,13 @@ func (m *Manager) controlDevice(ctx context.Context, deviceID string, action str
 	}
 
 	if deviceID == "hqplayer" {
-		return m.hqClient.Control(ctx, hqCfg, action, timeOffset, volume)
+		err := m.hqClient.Control(ctx, hqCfg, action, timeOffset, volume)
+		if err != nil {
+			RecordOutputDebug("hqp_ctrl_err", map[string]any{"action": action, "err": err.Error()})
+		} else {
+			RecordOutputDebug("hqp_ctrl", map[string]any{"action": action})
+		}
+		return err
 	}
 
 	m.dlnaScanner.mu.RLock()
@@ -693,22 +712,42 @@ func (m *Manager) controlDevice(ctx context.Context, deviceID string, action str
 	m.dlnaScanner.mu.RUnlock()
 
 	if !ok || dev.ControlURL == "" {
+		RecordOutputDebug("dlna_ctrl_err", map[string]any{"deviceId": deviceID, "action": action, "err": "device not found"})
 		return nil
 	}
 
+	var err error
 	switch action {
 	case "play":
-		return Play(ctx, m.httpClient, dev.ControlURL)
-	case "pause", "stop":
-		return Stop(ctx, m.httpClient, dev.ControlURL)
+		err = Play(ctx, m.httpClient, dev.ControlURL)
+		if err != nil && curTrack.Stream != "" {
+			if setErr := SetAVTransportURI(ctx, m.httpClient, dev.ControlURL, curTrack.Stream, curTrack.Title, curTrack.Artist); setErr == nil {
+				err = Play(ctx, m.httpClient, dev.ControlURL)
+				if err == nil && curOffset > 0 {
+					_ = Seek(ctx, m.httpClient, dev.ControlURL, curOffset)
+				}
+			}
+		}
+	case "pause":
+		err = Pause(ctx, m.httpClient, dev.ControlURL)
+		if err != nil {
+			err = Stop(ctx, m.httpClient, dev.ControlURL)
+		}
+	case "stop":
+		err = Stop(ctx, m.httpClient, dev.ControlURL)
 	case "seek":
-		return Seek(ctx, m.httpClient, dev.ControlURL, timeOffset)
+		err = Seek(ctx, m.httpClient, dev.ControlURL, timeOffset)
 	case "volume":
 		ctrl := dev.RenderingControlURL
 		if ctrl == "" {
 			ctrl = dev.ControlURL
 		}
-		return SetVolume(ctx, m.httpClient, ctrl, volume)
+		err = SetVolume(ctx, m.httpClient, ctrl, volume)
 	}
-	return nil
+	if err != nil {
+		RecordOutputDebug("dlna_ctrl_err", map[string]any{"deviceId": deviceID, "action": action, "err": err.Error()})
+	} else {
+		RecordOutputDebug("dlna_ctrl", map[string]any{"deviceId": deviceID, "action": action})
+	}
+	return err
 }
