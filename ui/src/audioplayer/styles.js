@@ -355,6 +355,29 @@ const useStyle = makeStyles(
       '& .react-jinke-music-player-mobile-progress': {
         display: (props) => (props.isRadio ? 'none' : 'flex'),
       },
+      '& .audio-lists-panel': {
+        display: 'flex !important',
+        flexDirection: 'column !important',
+      },
+      '& .audio-lists-panel-header': {
+        flexShrink: 0,
+      },
+      '& .audio-lists-panel-content': {
+        flex: '1 1 auto !important',
+        minHeight: '0 !important',
+        overflowX: 'hidden !important',
+        overflowY: 'auto !important',
+        WebkitOverflowScrolling: 'touch !important',
+        touchAction: 'pan-y !important',
+        overscrollBehavior: 'contain',
+      },
+      '& .audio-lists-panel-mobile': {
+        maxHeight: '100dvh !important',
+      },
+      '& .audio-lists-panel-mobile .audio-lists-panel-content': {
+        height: 'auto !important',
+        maxHeight: '100% !important',
+      },
     },
   }),
   { name: 'NDAudioPlayer' },

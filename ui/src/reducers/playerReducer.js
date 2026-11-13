@@ -76,26 +76,37 @@ const mapToAudioLists = (item) => {
     }
   }
 
-  const { lyrics } = item
+  const { lyrics, lyric } = item
   let lyricText = ''
 
   if (lyrics) {
-    const structured = JSON.parse(lyrics)
-    for (const structuredLyric of structured) {
-      if (structuredLyric.synced) {
-        for (const line of structuredLyric.line) {
-          let time = Math.floor(line.start / 10)
-          const ms = time % 100
-          time = Math.floor(time / 100)
-          const sec = time % 60
-          time = Math.floor(time / 60)
-          const min = time % 60
+    try {
+      const structured = JSON.parse(lyrics)
+      if (Array.isArray(structured)) {
+        for (const structuredLyric of structured) {
+          if (structuredLyric.synced && Array.isArray(structuredLyric.line)) {
+            for (const line of structuredLyric.line) {
+              let time = Math.floor(line.start / 10)
+              const ms = time % 100
+              time = Math.floor(time / 100)
+              const sec = time % 60
+              time = Math.floor(time / 60)
+              const min = time % 60
 
-          ms.toString()
-          lyricText += `[${pad(min)}:${pad(sec)}.${pad(ms)}] ${line.value}\n`
+              lyricText += `[${pad(min)}:${pad(sec)}.${pad(ms)}] ${line.value}\n`
+            }
+          }
         }
+      } else if (typeof lyrics === 'string') {
+        lyricText = lyrics
+      }
+    } catch {
+      if (typeof lyrics === 'string') {
+        lyricText = lyrics
       }
     }
+  } else if (typeof lyric === 'string') {
+    lyricText = lyric
   }
 
   return {
@@ -150,7 +161,7 @@ const reduceSetTrack = (state, { data }) => {
 }
 
 const reduceAddTracks = (state, { data }) => {
-  const queue = state.queue
+  const queue = [...state.queue]
   Object.keys(data).forEach((id) => {
     queue.push(mapToAudioLists(data[id]))
   })

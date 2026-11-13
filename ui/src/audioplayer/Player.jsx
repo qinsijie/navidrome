@@ -719,6 +719,8 @@ const Player = () => {
         }
         isSyntheticEventRef.current = false
       }
+      lastLyricTextRef.current = ''
+      lastLyricUpdateAtRef.current = 0
       setHeartbeatTrackId(null)
     }
 
@@ -1565,7 +1567,9 @@ const Player = () => {
             }
             setHeartbeatTrackId(info.trackId)
           } else {
-            setHeartbeatTrackId(null)
+            lastLyricTextRef.current = ''
+      lastLyricUpdateAtRef.current = 0
+      setHeartbeatTrackId(null)
           }
         }
         if (config.gaTrackingId) {
@@ -1594,6 +1598,8 @@ const Player = () => {
           .reportPlayback(currentTrackId, lastPositionMsRef.current, 'stopped')
           .catch(() => {})
       }
+      lastLyricTextRef.current = ''
+      lastLyricUpdateAtRef.current = 0
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
     }
@@ -1657,6 +1663,8 @@ const Player = () => {
           .reportPlayback(currentTrackId, posMs, 'paused')
           .catch(() => {})
       }
+      lastLyricTextRef.current = ''
+      lastLyricUpdateAtRef.current = 0
       setHeartbeatTrackId(null)
     },
     [dispatch, currentTrackId, stopSilentKeepAlive],
@@ -1672,6 +1680,8 @@ const Player = () => {
           .reportPlayback(currentTrackId, posMs, 'stopped')
           .catch(() => {})
       }
+      lastLyricTextRef.current = ''
+      lastLyricUpdateAtRef.current = 0
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
       dispatch(currentPlaying(info))
@@ -1715,6 +1725,65 @@ const Player = () => {
     [playerState.queue],
   )
 
+  const lastLyricTextRef = useRef('')
+  const lastLyricUpdateAtRef = useRef(0)
+
+  const onAudioLyricChange = useCallback((_lineNum, txt) => {
+    if (activeOutputDeviceRef.current !== 'local') return
+    if (
+      typeof navigator === 'undefined' ||
+      !('mediaSession' in navigator) ||
+      typeof window.MediaMetadata === 'undefined'
+    ) {
+      return
+    }
+    const cleanLyric = (txt || '').trim()
+    if (cleanLyric === lastLyricTextRef.current) return
+
+    const now = Date.now()
+    // Throttle updates to >= 800ms to avoid Bluetooth AVRCP flooding
+    if (cleanLyric && now - lastLyricUpdateAtRef.current < 800) {
+      return
+    }
+
+    const currentMeta = navigator.mediaSession.metadata
+    const current = playerStateRef.current?.current
+    const baseTitle =
+      current?.name || current?.song?.title || currentMeta?.title || ''
+    const baseArtist =
+      current?.song?.artist ||
+      (typeof current?.singer === 'string'
+        ? current.singer.split(' · ')[0]
+        : '') ||
+      currentMeta?.artist?.split(' | ')[0] ||
+      ''
+    const baseAlbum = current?.song?.album || currentMeta?.album || baseTitle
+
+    if (!baseTitle) return
+
+    lastLyricTextRef.current = cleanLyric
+    lastLyricUpdateAtRef.current = now
+
+    try {
+      const nextArtist = cleanLyric
+        ? baseArtist
+          ? `${baseArtist} | ${cleanLyric}`
+          : cleanLyric
+        : baseArtist
+
+      navigator.mediaSession.metadata = new window.MediaMetadata({
+        title: baseTitle,
+        artist: nextArtist,
+        album: baseAlbum,
+        artwork:
+          currentMeta?.artwork ||
+          (current?.cover ? [{ src: current.cover }] : []),
+      })
+    } catch (e) {
+      // Ignore MediaMetadata errors on unsupported WebViews
+    }
+  }, [])
+
   const onBeforeDestroy = useCallback(() => {
     return new Promise((resolve, reject) => {
       if (currentTrackId && !playerStateRef.current?.current?.isRadio) {
@@ -1726,6 +1795,8 @@ const Player = () => {
           )
           .catch(() => {})
       }
+      lastLyricTextRef.current = ''
+      lastLyricUpdateAtRef.current = 0
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
       dispatch(clearQueue())
@@ -2315,6 +2386,7 @@ const Player = () => {
           }
         }}
         onAudioEnded={onAudioEnded}
+        onAudioLyricChange={onAudioLyricChange}
         onCoverClick={onCoverClick}
         onAudioError={onAudioError}
         onBeforeDestroy={onBeforeDestroy}

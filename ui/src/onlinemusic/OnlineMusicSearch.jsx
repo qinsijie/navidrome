@@ -250,6 +250,7 @@ export const OnlineMusicSearch = () => {
   const [activeMenuTrack, setActiveMenuTrack] = useState(null)
 
   const searchBoxRef = useRef(null)
+  const skipTipsRef = useRef(false)
 
   const doSearch = useCallback(
     async (src, query) => {
@@ -274,6 +275,10 @@ export const OnlineMusicSearch = () => {
 
   // 150ms debounced search tips
   useEffect(() => {
+    if (skipTipsRef.current) {
+      skipTipsRef.current = false
+      return
+    }
     if (!keyword || keyword.trim() === '') {
       setTips([])
       setShowTips(false)
@@ -299,13 +304,16 @@ export const OnlineMusicSearch = () => {
   }, [keyword])
 
   const handleSelectTip = (tip) => {
+    skipTipsRef.current = true
     setKeyword(tip)
+    setTips([])
     setShowTips(false)
     doSearch(source, tip)
   }
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
+      skipTipsRef.current = true
       setShowTips(false)
       if (keyword.trim()) {
         doSearch(source, keyword)
@@ -341,6 +349,7 @@ export const OnlineMusicSearch = () => {
       cover: coverUrl,
       coverUrl,
       hasCoverArt: !!coverUrl,
+      lyrics: track.lyrics || track.lyric || '',
     }
   }
 
@@ -508,7 +517,11 @@ export const OnlineMusicSearch = () => {
                 <div
                   key={track.id || idx}
                   className={classes.trackItem}
-                  onClick={(e) => handlePlay(track, e)}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setMenuAnchorEl(e.currentTarget)
+                    setActiveMenuTrack(track)
+                  }}
                 >
                   <div className={classes.indexCol}>{idx + 1}</div>
 

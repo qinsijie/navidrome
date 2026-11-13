@@ -357,13 +357,20 @@ button[data-testid="save-queue-button"] {
     color: black!important;
 }
 .audio-lists-panel-mobile {
-    height: 750px !important;
-    top: calc(100vh / 2 - 375px) !important; 
+    height: min(750px, 85dvh) !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
     width: 91% !important;
     margin: 0 auto;
+    display: flex !important;
+    flex-direction: column !important;
 } 
 .audio-lists-panel-mobile .audio-lists-panel-content {
-    height: auto!important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    height: auto !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
 }
 .audio-lists-panel-content {
     scrollbar-width: none;
