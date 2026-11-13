@@ -1,10 +1,12 @@
 package output
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +20,10 @@ import (
 	"github.com/navidrome/navidrome/model"
 )
 
-const wavHeaderSize = 44
+const (
+	wavHeaderSize   = 44
+	pcmInitialBurst = 512 * 1024 // 512 KB initial burst to prime HQPE DSD256 modulator buffer without stalling
+)
 
 // IsDSDMedia reports whether the track is native DSD (.dsf / .dff), which must always remain raw passthrough.
 func IsDSDMedia(suffix, path string) bool {
@@ -124,6 +129,23 @@ func BuildWAVHeader(f PCMFormat) []byte {
 	return hdr
 }
 
+type cappedBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if c.buf.Len() < c.max {
+		remain := c.max - c.buf.Len()
+		if len(p) > remain {
+			_, _ = c.buf.Write(p[:remain])
+		} else {
+			_, _ = c.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
 // ServePCMStream transcodes local or online audio into an uncompressed constant-bitrate WAV stream
 // with exact Content-Length, HTTP Range support, and 1.06x Roon-like pacing.
 func ServePCMStream(w http.ResponseWriter, r *http.Request, mf *model.MediaFile, ds model.DataStore) {
@@ -190,6 +212,23 @@ func ServePCMStream(w http.ResponseWriter, r *http.Request, mf *model.MediaFile,
 		return
 	}
 
+	remaining := contentLen
+	currPos := start
+	pacingRate := stream.CalculatePCMPacingRate(pcmFmt.SampleRate, pcmFmt.Channels, pcmFmt.BitDepth)
+
+	// Fast path: client only requested bytes inside the 44-byte WAV header
+	if currPos+remaining <= wavHeaderSize {
+		if isRange {
+			w.WriteHeader(http.StatusPartialContent)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+		pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, pcmInitialBurst)
+		hdr := BuildWAVHeader(pcmFmt)
+		_, _ = pw.Write(hdr[currPos : currPos+remaining])
+		return
+	}
+
 	// Prepare online relay only for GET requests that miss the disk cache
 	var relay *musicengine.StreamRelay
 	if isOnline && localPath == "" {
@@ -219,19 +258,116 @@ func ServePCMStream(w http.ResponseWriter, r *http.Request, mf *model.MediaFile,
 		return
 	}
 
+	cmdCtx, cancelCmd := context.WithCancel(r.Context())
+	defer cancelCmd()
+
+	// For uncached online tracks, expose relay on a temporary loopback HTTP server so ffmpeg can HTTP-Range seek (needed for M4A/MP4 moov atoms)
+	inputTarget := localPath
+	if relay != nil {
+		ln, lerr := net.Listen("tcp", "127.0.0.1:0")
+		if lerr != nil {
+			log.Error(r.Context(), "PCM Stream: Failed to create loopback listener", lerr)
+			http.Error(w, "loopback listener error", http.StatusInternalServerError)
+			return
+		}
+		srv := &http.Server{Handler: relay}
+		defer func() {
+			_ = srv.Close()
+			_ = ln.Close()
+		}()
+		go func() {
+			<-cmdCtx.Done()
+			_ = srv.Close()
+			_ = ln.Close()
+		}()
+		go func() {
+			_ = srv.Serve(ln)
+		}()
+		inputTarget = fmt.Sprintf("http://%s/stream", ln.Addr().String())
+	}
+
+	pcmStartOffset := int64(0)
+	if currPos > wavHeaderSize {
+		pcmStartOffset = currPos - wavHeaderSize
+	}
+	alignedBytes := (pcmStartOffset / int64(pcmFmt.BlockAlign)) * int64(pcmFmt.BlockAlign)
+	skipBytes := pcmStartOffset - alignedBytes
+	seekSec := float64(alignedBytes) / float64(pcmFmt.ByteRate)
+
+	codec := "pcm_s16le"
+	outFmt := "s16le"
+	switch pcmFmt.BitDepth {
+	case 24:
+		codec = "pcm_s24le"
+		outFmt = "s24le"
+	case 32:
+		codec = "pcm_s32le"
+		outFmt = "s32le"
+	}
+
+	args := []string{"-v", "error", "-nostdin"}
+	if seekSec > 0.05 {
+		args = append(args, "-ss", fmt.Sprintf("%.3f", seekSec))
+	}
+	args = append(args,
+		"-i", inputTarget,
+		"-vn", "-sn", "-dn",
+		"-ac", strconv.Itoa(pcmFmt.Channels),
+		"-ar", strconv.Itoa(pcmFmt.SampleRate),
+		"-acodec", codec,
+		"-f", outFmt,
+		"pipe:1",
+	)
+
+	cmd := exec.CommandContext(cmdCtx, ffmpegPath, args...)
+	stderrBuf := &cappedBuffer{max: 4096}
+	cmd.Stderr = stderrBuf
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Error(r.Context(), "PCM Stream: Failed to attach stdout pipe", err)
+		http.Error(w, "ffmpeg stdout pipe error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		log.Error(r.Context(), "PCM Stream: Failed to start ffmpeg", err)
+		http.Error(w, "ffmpeg start error", http.StatusInternalServerError)
+		return
+	}
+
+	defer func() {
+		cancelCmd()
+		_ = stdout.Close()
+		_ = cmd.Wait()
+	}()
+
+	if skipBytes > 0 {
+		if _, err := io.CopyN(io.Discard, stdout, skipBytes); err != nil {
+			log.Error(r.Context(), "PCM Stream: Failed skipping PCM alignment bytes", "id", mf.ID, "stderr", strings.TrimSpace(stderrBuf.buf.String()), err)
+			http.Error(w, "ffmpeg decode failed", http.StatusBadGateway)
+			return
+		}
+	}
+
+	// Pre-read initial PCM chunk BEFORE sending HTTP 200/206 + WAV header so decode errors are never masked as silent streams
+	firstChunk := make([]byte, 4*1024)
+	firstN, firstErr := stdout.Read(firstChunk)
+	if firstN == 0 {
+		errDetail := strings.TrimSpace(stderrBuf.buf.String())
+		log.Error(r.Context(), "PCM Stream: ffmpeg produced 0 PCM bytes", "id", mf.ID, "input", inputTarget, "stderr", errDetail, firstErr)
+		http.Error(w, "ffmpeg decoded 0 bytes: "+errDetail, http.StatusBadGateway)
+		return
+	}
+
 	if isRange {
 		w.WriteHeader(http.StatusPartialContent)
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
 
-	pacingRate := stream.CalculatePCMPacingRate(pcmFmt.SampleRate, pcmFmt.Channels, pcmFmt.BitDepth)
-	pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, 128*1024)
+	pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, pcmInitialBurst)
 
-	remaining := contentLen
-	currPos := start
-
-	// 1. Serve WAV header (or requested slice of it)
+	// 1. Write WAV header slice if requested range starts inside header
 	if currPos < wavHeaderSize {
 		hdr := BuildWAVHeader(pcmFmt)
 		hdrEnd := int64(wavHeaderSize)
@@ -246,96 +382,18 @@ func ServePCMStream(w http.ResponseWriter, r *http.Request, mf *model.MediaFile,
 		}
 	}
 
-	// 2. Decode audio into raw PCM via ffmpeg (context-bound to avoid zombie processes)
-	pcmOffset := currPos - wavHeaderSize
-	alignedBytes := (pcmOffset / int64(pcmFmt.BlockAlign)) * int64(pcmFmt.BlockAlign)
-	skipBytes := pcmOffset - alignedBytes
-	seekSec := float64(alignedBytes) / float64(pcmFmt.ByteRate)
-
-	codec := "pcm_s16le"
-	outFmt := "s16le"
-	switch pcmFmt.BitDepth {
-	case 24:
-		codec = "pcm_s24le"
-		outFmt = "s24le"
-	case 32:
-		codec = "pcm_s32le"
-		outFmt = "s32le"
+	// 2. Flush pre-read initial PCM chunk
+	toWriteFirst := int64(firstN)
+	if toWriteFirst > remaining {
+		toWriteFirst = remaining
 	}
-
-	cmdCtx, cancelCmd := context.WithCancel(r.Context())
-	defer cancelCmd()
-
-	args := []string{"-v", "error", "-nostdin"}
-	if localPath != "" {
-		if seekSec > 0.05 {
-			args = append(args, "-ss", fmt.Sprintf("%.3f", seekSec))
-		}
-		args = append(args, "-i", localPath)
-	} else {
-		args = append(args, "-i", "pipe:0")
-		if seekSec > 0.05 {
-			args = append(args, "-ss", fmt.Sprintf("%.3f", seekSec))
-		}
-	}
-	args = append(args,
-		"-vn", "-sn", "-dn",
-		"-ac", strconv.Itoa(pcmFmt.Channels),
-		"-ar", strconv.Itoa(pcmFmt.SampleRate),
-		"-acodec", codec,
-		"-f", outFmt,
-		"pipe:1",
-	)
-
-	cmd := exec.CommandContext(cmdCtx, ffmpegPath, args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Error(r.Context(), "PCM Stream: Failed to attach stdout pipe", err)
+	n, werr := pw.Write(firstChunk[:toWriteFirst])
+	remaining -= int64(n)
+	if werr != nil || remaining <= 0 {
 		return
 	}
 
-	var pipeReader *io.PipeReader
-	var pipeWriter *io.PipeWriter
-	if relay != nil {
-		pipeReader, pipeWriter = io.Pipe()
-		cmd.Stdin = pipeReader
-		go func() {
-			defer pipeWriter.Close()
-			if rerr := relay.StreamTo(cmdCtx, pipeWriter); rerr != nil && cmdCtx.Err() == nil {
-				log.Warn(cmdCtx, "PCM Stream: Online relay stream interrupted", "id", mf.ID, rerr)
-			}
-		}()
-	}
-
-	if err := cmd.Start(); err != nil {
-		if pipeReader != nil {
-			_ = pipeReader.Close()
-		}
-		if pipeWriter != nil {
-			_ = pipeWriter.Close()
-		}
-		log.Error(r.Context(), "PCM Stream: Failed to start ffmpeg", err)
-		return
-	}
-
-	defer func() {
-		cancelCmd()
-		if pipeReader != nil {
-			_ = pipeReader.Close()
-		}
-		if pipeWriter != nil {
-			_ = pipeWriter.Close()
-		}
-		_ = stdout.Close()
-		_ = cmd.Wait()
-	}()
-
-	if skipBytes > 0 {
-		if _, err := io.CopyN(io.Discard, stdout, skipBytes); err != nil {
-			return
-		}
-	}
-
+	// 3. Stream remaining PCM audio at 1.06x constant rate
 	buf := make([]byte, 4*1024)
 	written, _ := io.CopyBuffer(pw, io.LimitReader(stdout, remaining), buf)
 	remaining -= written
@@ -348,8 +406,8 @@ func ServePCMStream(w http.ResponseWriter, r *http.Request, mf *model.MediaFile,
 			if remaining < toWrite {
 				toWrite = remaining
 			}
-			n, werr := pw.Write(zeroBuf[:toWrite])
-			remaining -= int64(n)
+			nw, werr := pw.Write(zeroBuf[:toWrite])
+			remaining -= int64(nw)
 			if werr != nil {
 				break
 			}

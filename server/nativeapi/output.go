@@ -87,17 +87,26 @@ func appendPCMModeIfHQPlayer(streamURL string, isHQPlayer bool, mgr *output.Mana
 	if !strings.Contains(streamURL, "/api/output/stream/") || strings.Contains(streamURL, "mode=") {
 		return streamURL
 	}
-	if strings.Contains(streamURL, "?") {
-		return streamURL + "&mode=pcm"
+	pathPart := streamURL
+	queryPart := ""
+	if idx := strings.Index(streamURL, "?"); idx != -1 {
+		pathPart = streamURL[:idx]
+		queryPart = streamURL[idx+1:]
 	}
-	return streamURL + "?mode=pcm"
+	if !strings.HasSuffix(strings.ToLower(pathPart), ".wav") {
+		pathPart += ".wav"
+	}
+	if queryPart == "" {
+		return pathPart + "?mode=pcm"
+	}
+	return pathPart + "?" + queryPart + "&mode=pcm"
 }
 
 // addPublicOutputRoutes mounts unauthenticated endpoints for remote DACs / players (HQPlayer, DLNA)
 // to fetch raw physical audio streams without token expiration limitations.
 func (api *Router) addPublicOutputRoutes(r chi.Router) {
 	streamHandler := func(w http.ResponseWriter, r *http.Request) {
-		id := chi.URLParam(r, "id")
+		id := strings.TrimSuffix(chi.URLParam(r, "id"), ".wav")
 		if id == "" {
 			http.Error(w, "missing track id", http.StatusBadRequest)
 			return
