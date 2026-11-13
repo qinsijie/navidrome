@@ -17,9 +17,12 @@ import {
   Tooltip,
   IconButton,
   Select,
-  MenuItem,
   FormControl,
   InputLabel,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
   makeStyles,
 } from '@material-ui/core'
 import SettingsEthernetIcon from '@material-ui/icons/SettingsEthernet'
@@ -31,6 +34,8 @@ import RefreshIcon from '@material-ui/icons/Refresh'
 import SpeedIcon from '@material-ui/icons/Speed'
 import LinkIcon from '@material-ui/icons/Link'
 import StorageIcon from '@material-ui/icons/Storage'
+import ShareIcon from '@material-ui/icons/Share'
+import InsertDriveFileIcon from '@material-ui/icons/InsertDriveFile'
 import {
   getSources,
   uploadSource,
@@ -42,6 +47,7 @@ import {
   getOnlineCacheStats,
   setOnlineCacheConfig,
   clearOnlineCache,
+  downloadSourceScript,
 } from './api'
 
 const useStyles = makeStyles((theme) => ({
@@ -118,6 +124,7 @@ const PLATFORM_MAP = {
   kg: { name: '酷狗音乐', color: '#2563eb' },
   kw: { name: '酷我音乐', color: '#f59e0b' },
   mg: { name: '咪咕音乐', color: '#ec4899' },
+  qs: { name: '汽水音乐', color: '#06b6d4' },
 }
 
 export const SourceSettings = () => {
@@ -142,6 +149,11 @@ export const SourceSettings = () => {
   const [cacheLimitMB, setCacheLimitMB] = useState(1024)
   const [savingCache, setSavingCache] = useState(false)
   const [clearingCache, setClearingCache] = useState(false)
+
+  // Source share menu
+  const [shareAnchorEl, setShareAnchorEl] = useState(null)
+  const [shareTargetItem, setShareTargetItem] = useState(null)
+  const [sharingFile, setSharingFile] = useState(false)
 
   // Hidden file input
   const fileInputRef = useRef(null)
@@ -256,6 +268,115 @@ export const SourceSettings = () => {
     const mb = bytes / (1024 * 1024)
     if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`
     return `${mb.toFixed(1)} MB`
+  }
+
+  const copyToClipboardCompat = async (text) => {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(text)
+        return true
+      } catch {
+        // fallback below
+      }
+    }
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.setAttribute('readonly', '')
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return ok
+    } catch {
+      return false
+    }
+  }
+
+  const handleShareLink = async (item) => {
+    if (!item?.subscriptionUrl) return
+    const title = item.name || '落雪音源'
+    const url = item.subscriptionUrl
+    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+      try {
+        await navigator.share({
+          title: `分享音源：${title}`,
+          text: `${title} 音源订阅链接`,
+          url,
+        })
+        setStatusMsg(`已调起系统分享：${title}`)
+        return
+      } catch (err) {
+        if (err && err.name === 'AbortError') return
+      }
+    }
+    const copied = await copyToClipboardCompat(url)
+    if (copied) {
+      setStatusMsg(`已复制音源链接（${title}），可直接粘贴发送到 QQ / 微信`)
+    } else {
+      setErrorMsg(`自动复制失败，请手动复制链接：${url}`)
+    }
+  }
+
+  const handleShareFile = async (item) => {
+    if (!item?.id) return
+    setSharingFile(true)
+    setErrorMsg('')
+    try {
+      const { blob, fileName } = await downloadSourceScript(item.id)
+      const jsFile = new File([blob], fileName, {
+        type: 'application/javascript',
+      })
+
+      if (
+        typeof navigator !== 'undefined' &&
+        typeof navigator.canShare === 'function' &&
+        typeof navigator.share === 'function' &&
+        navigator.canShare({ files: [jsFile] })
+      ) {
+        try {
+          await navigator.share({
+            title: item.name || fileName,
+            text: `分享音源脚本：${item.name || fileName}`,
+            files: [jsFile],
+          })
+          setStatusMsg(`已调起系统文件分享：${fileName}`)
+          return
+        } catch (err) {
+          if (err && err.name === 'AbortError') return
+        }
+      }
+
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = fileName
+      a.style.display = 'none'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
+
+      setStatusMsg(
+        `已尝试下载 JS 文件（${fileName}）；若 App 内拦截下载，可点击右上角用系统浏览器打开后再导出`,
+      )
+    } catch (err) {
+      setErrorMsg('导出分享 JS 文件失败: ' + err.message)
+    } finally {
+      setSharingFile(false)
+    }
+  }
+
+  const handleOpenShare = (item, e) => {
+    if (item.subscriptionUrl) {
+      setShareAnchorEl(e.currentTarget)
+      setShareTargetItem(item)
+    } else {
+      handleShareFile(item)
+    }
   }
 
   const handleImportFromUrl = async () => {
@@ -554,7 +675,22 @@ export const SourceSettings = () => {
                     ID: {item.id}
                   </Typography>
 
-                  <Box display="flex" gap={1}>
+                  <Box display="flex" style={{ gap: 8 }}>
+                    <Button
+                      size="small"
+                      startIcon={
+                        sharingFile ? (
+                          <CircularProgress size={14} />
+                        ) : (
+                          <ShareIcon fontSize="small" />
+                        )
+                      }
+                      disabled={sharingFile}
+                      onClick={(e) => handleOpenShare(item, e)}
+                      style={{ textTransform: 'none', fontSize: '0.78rem' }}
+                    >
+                      分享
+                    </Button>
                     {item.subscriptionUrl && (
                       <Button
                         size="small"
@@ -572,6 +708,43 @@ export const SourceSettings = () => {
           )
         })
       )}
+
+      {/* 链接音源分享选择菜单 */}
+      <Menu
+        anchorEl={shareAnchorEl}
+        open={Boolean(shareAnchorEl)}
+        onClose={() => {
+          setShareAnchorEl(null)
+          setShareTargetItem(null)
+        }}
+      >
+        <MenuItem
+          onClick={() => {
+            const target = shareTargetItem
+            setShareAnchorEl(null)
+            setShareTargetItem(null)
+            if (target) handleShareLink(target)
+          }}
+        >
+          <ListItemIcon style={{ minWidth: 34 }}>
+            <LinkIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="分享源链接" />
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            const target = shareTargetItem
+            setShareAnchorEl(null)
+            setShareTargetItem(null)
+            if (target) handleShareFile(target)
+          }}
+        >
+          <ListItemIcon style={{ minWidth: 34 }}>
+            <InsertDriveFileIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="分享 JS 文件" />
+        </MenuItem>
+      </Menu>
 
       {/* 在线音频缓存设置卡片 */}
       <Card className={classes.card}>

@@ -1670,6 +1670,25 @@ const Player = () => {
     [dispatch, currentTrackId, stopSilentKeepAlive],
   )
 
+  useEffect(() => {
+    const handleForceLocalPause = () => {
+      isUserExplicitlyPausedRef.current = true
+      needsNetworkResumeRef.current = false
+      stopSilentKeepAlive()
+      const audio = audioInstanceRef.current
+      if (audio && !audio.paused) {
+        try {
+          audio.pause()
+        } catch (e) {}
+      }
+      logAudioGuard('[Lifecycle:force-local-pause] Locked paused before external browser switch')
+    }
+    window.addEventListener('nd:force-local-pause', handleForceLocalPause)
+    return () => {
+      window.removeEventListener('nd:force-local-pause', handleForceLocalPause)
+    }
+  }, [stopSilentKeepAlive])
+
   const onAudioEnded = useCallback(
     (currentPlayId, audioLists, info) => {
       if (info.isPlaceholder) return

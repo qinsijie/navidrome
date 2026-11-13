@@ -228,6 +228,7 @@ const SOURCE_OPTIONS = [
   { id: 'kg', label: '🐕 小构音乐' },
   { id: 'tx', label: '🐧 小秋音乐' },
   { id: 'mg', label: '🍯 小蜜音乐' },
+  { id: 'qs', label: '🥤 小气音乐' },
 ]
 
 const SEARCH_HISTORY_KEY = 'nd_online_search_history'

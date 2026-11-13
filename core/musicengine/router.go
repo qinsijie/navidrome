@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -41,6 +42,7 @@ func (api *Router) routes() http.Handler {
 	r.Post("/sources/activate", api.handleActivateSource)
 	r.Post("/sources/{id}/activate", api.handleActivateSource)
 	r.Delete("/sources/{id}", api.handleDeleteSource)
+	r.Get("/sources/{id}/download", api.handleDownloadSource)
 	r.Post("/sources/{id}/check-update", api.handleCheckUpdate)
 	r.Post("/sources/ping", api.handlePing)
 
@@ -503,4 +505,17 @@ func (api *Router) handleClearCache(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(stats)
+}
+
+func (api *Router) handleDownloadSource(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	content, fileName, err := api.engine.GetScriptFile(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(fileName))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
 }

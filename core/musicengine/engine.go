@@ -732,6 +732,35 @@ func (e *MusicEngine) ActivateScriptByID(scriptID string) error {
 	return nil
 }
 
+var validScriptIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// GetScriptFile safely reads an installed source script by ID for download/sharing.
+func (e *MusicEngine) GetScriptFile(scriptID string) ([]byte, string, error) {
+	if scriptID == "" || filepath.Base(scriptID) != scriptID || !validScriptIDPattern.MatchString(scriptID) {
+		return nil, "", errors.New("非法的音源 ID")
+	}
+
+	installedDir := filepath.Join(GetEngineCacheDir(), "scripts", "installed")
+	scriptPath := filepath.Join(installedDir, scriptID+".js")
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return nil, "", errors.New("音源脚本文件不存在")
+	}
+
+	fileName := scriptID + ".js"
+	if metaBytes, err := os.ReadFile(filepath.Join(installedDir, scriptID+".json")); err == nil {
+		var meta SourceScriptMeta
+		if json.Unmarshal(metaBytes, &meta) == nil && strings.TrimSpace(meta.Name) != "" {
+			cleanName := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_").Replace(strings.TrimSpace(meta.Name))
+			if cleanName != "" {
+				fileName = cleanName + ".js"
+			}
+		}
+	}
+
+	return content, fileName, nil
+}
+
 // DeleteScript removes an installed script
 func (e *MusicEngine) DeleteScript(scriptID string) error {
 	state := e.state.Load()
@@ -806,6 +835,7 @@ func (e *MusicEngine) PingPlatforms(ctx context.Context) ([]PingResult, error) {
 		"kg": "酷狗音乐",
 		"kw": "酷我音乐",
 		"mg": "咪咕音乐",
+		"qs": "汽水音乐",
 	}
 
 	var results []PingResult

@@ -22,15 +22,21 @@ import {
 import { useSelector } from 'react-redux'
 import {
   makeStyles,
+  Menu,
   MenuItem,
   ListItemIcon,
+  ListItemText,
   Divider,
   IconButton,
+  Snackbar,
   Tooltip,
   Typography,
 } from '@material-ui/core'
 import ArrowBackIcon from '@material-ui/icons/ArrowBack'
 import ViewListIcon from '@material-ui/icons/ViewList'
+import OpenInBrowserIcon from '@material-ui/icons/OpenInBrowser'
+import LanguageIcon from '@material-ui/icons/Language'
+import FileCopyIcon from '@material-ui/icons/FileCopy'
 import { Dialogs } from '../dialogs/Dialogs'
 import { AboutDialog, QuickConnectDialog } from '../dialogs'
 import PersonalMenu from './PersonalMenu'
@@ -53,6 +59,12 @@ const useStyles = makeStyles(
       marginRight: theme.spacing(0.5),
       color: 'inherit',
       '@media (max-width: 768px)': {
+        display: 'none !important',
+      },
+    },
+    mobileOnlyBtn: {
+      color: 'inherit',
+      '@media (min-width: 769px)': {
         display: 'none !important',
       },
     },
@@ -155,6 +167,158 @@ const settingsResources = (resource) =>
   resource.options &&
   resource.options.subMenu === 'settings'
 
+const copyTextCompat = async (text) => {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // fallback below
+    }
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    ta.style.left = '-9999px'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+const OpenInBrowserButton = () => {
+  const classes = useStyles()
+  const [anchorEl, setAnchorEl] = useState(null)
+  const [toastMsg, setToastMsg] = useState('')
+
+  const pauseLocalBeforeSwitch = () => {
+    window.dispatchEvent(new CustomEvent('nd:force-local-pause'))
+  }
+
+  const getTargetUrl = () => window.location.href
+
+  const handleOpenSystem = () => {
+    setAnchorEl(null)
+    pauseLocalBeforeSwitch()
+    const url = getTargetUrl()
+    try {
+      window.open(url, '_blank', 'noopener,noreferrer')
+    } catch {
+      // ignore
+    }
+    setToastMsg('已暂停本机播放，请在外部浏览器继续（可点右上角 × 关闭当前窗口）')
+  }
+
+  const handleOpenAndroidBrowser = (pkg, label) => {
+    setAnchorEl(null)
+    pauseLocalBeforeSwitch()
+    const url = getTargetUrl()
+    try {
+      const parsed = new URL(url)
+      const scheme = parsed.protocol.replace(':', '')
+      const hostPath = `${parsed.host}${parsed.pathname}${parsed.search}${parsed.hash}`
+      const intentUrl = `intent://${hostPath}#Intent;scheme=${scheme};package=${pkg};S.browser_fallback_url=${encodeURIComponent(url)};end`
+      window.location.href = intentUrl
+    } catch {
+      window.open(url, '_blank', 'noopener,noreferrer')
+    }
+    setToastMsg(`已暂停本机播放，正在尝试唤起 ${label}（可点右上角 × 关闭当前窗口）`)
+  }
+
+  const handleCopyUrl = async () => {
+    setAnchorEl(null)
+    pauseLocalBeforeSwitch()
+    const ok = await copyTextCompat(getTargetUrl())
+    if (ok) {
+      setToastMsg('已暂停本机播放并复制链接，请粘贴到外部浏览器打开')
+    } else {
+      setToastMsg('已暂停本机播放，请手动复制地址栏链接到浏览器打开')
+    }
+  }
+
+  return (
+    <>
+      <Tooltip title="使用浏览器打开">
+        <IconButton
+          color="inherit"
+          size="small"
+          className={classes.mobileOnlyBtn}
+          onClick={(e) => setAnchorEl(e.currentTarget)}
+          aria-label="open-in-browser"
+        >
+          <OpenInBrowserIcon fontSize="small" />
+        </IconButton>
+      </Tooltip>
+      <Menu
+        anchorEl={anchorEl}
+        open={Boolean(anchorEl)}
+        onClose={() => setAnchorEl(null)}
+        getContentAnchorEl={null}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        <MenuItem onClick={handleOpenSystem}>
+          <ListItemIcon style={{ minWidth: 34 }}>
+            <LanguageIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="系统默认浏览器打开" />
+        </MenuItem>
+        <MenuItem
+          onClick={() =>
+            handleOpenAndroidBrowser('com.android.chrome', 'Chrome')
+          }
+        >
+          <ListItemIcon style={{ minWidth: 34 }}>
+            <OpenInBrowserIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="Chrome 打开 (Android)" />
+        </MenuItem>
+        <MenuItem
+          onClick={() =>
+            handleOpenAndroidBrowser('com.microsoft.emmx', 'Edge')
+          }
+        >
+          <ListItemIcon style={{ minWidth: 34 }}>
+            <OpenInBrowserIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="Edge 打开 (Android)" />
+        </MenuItem>
+        <MenuItem
+          onClick={() =>
+            handleOpenAndroidBrowser('org.mozilla.firefox', 'Firefox')
+          }
+        >
+          <ListItemIcon style={{ minWidth: 34 }}>
+            <OpenInBrowserIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="Firefox 打开 (Android)" />
+        </MenuItem>
+        <Divider />
+        <MenuItem onClick={handleCopyUrl}>
+          <ListItemIcon style={{ minWidth: 34 }}>
+            <FileCopyIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="复制当前链接去浏览器打开" />
+        </MenuItem>
+      </Menu>
+      <Snackbar
+        open={Boolean(toastMsg)}
+        autoHideDuration={4500}
+        onClose={() => setToastMsg('')}
+        message={toastMsg}
+        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+      />
+    </>
+  )
+}
+
 const CustomUserMenu = ({ onClick, ...rest }) => {
   const translate = useTranslate()
   const resources = useSelector(getResources)
@@ -214,6 +378,7 @@ const CustomUserMenu = ({ onClick, ...rest }) => {
         permissions === 'admin' &&
         config.enableNowPlaying && <NowPlayingPanel />}
       {config.devActivityPanel && permissions === 'admin' && <ActivityPanel />}
+      <OpenInBrowserButton />
       <UserMenu {...rest}>
         <PersonalMenu sidebarIsOpen={true} onClick={onClick} />
         <AudioSettingsMenu sidebarIsOpen={true} onClick={onClick} />

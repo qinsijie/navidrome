@@ -112,3 +112,35 @@ export const clearOnlineCache = async () => {
   })
   return response.json
 }
+
+export const downloadSourceScript = async (id) => {
+  const token = localStorage.getItem('token')
+  const headers = {}
+  if (token) {
+    headers['x-nd-authorization'] = `Bearer ${token}`
+  }
+  const response = await fetch(
+    `/api/musicengine/sources/${encodeURIComponent(id)}/download`,
+    { headers },
+  )
+  if (!response.ok) {
+    throw new Error(`下载失败 (${response.status})`)
+  }
+  const blob = await response.blob()
+  const disp = response.headers.get('content-disposition') || ''
+  let fileName = `${id}.js`
+  const utf8Match = disp.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8Match && utf8Match[1]) {
+    try {
+      fileName = decodeURIComponent(utf8Match[1])
+    } catch {
+      fileName = utf8Match[1]
+    }
+  } else {
+    const plainMatch = disp.match(/filename="?([^"]+)"?/i)
+    if (plainMatch && plainMatch[1]) {
+      fileName = plainMatch[1]
+    }
+  }
+  return { blob, fileName }
+}
