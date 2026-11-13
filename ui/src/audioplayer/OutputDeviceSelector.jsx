@@ -126,7 +126,13 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
   const notify = useNotify()
   const [anchorEl, setAnchorEl] = useState(null)
   const [devices, setDevices] = useState([])
-  const [activeId, setActiveId] = useState('local')
+  const [activeId, setActiveId] = useState(() => {
+    try {
+      return localStorage.getItem('nd_active_output_device') || 'local'
+    } catch {
+      return 'local'
+    }
+  })
   const [nowPlaying, setNowPlaying] = useState(null)
   const [clientName, setClientNameState] = useState(getClientName())
 
@@ -134,8 +140,17 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
     const handleNameUpdate = (e) => {
       if (e.detail?.name) setClientNameState(e.detail.name)
     }
+    const handleDeviceChanged = (e) => {
+      if (e.detail?.deviceId) {
+        setActiveId(e.detail.deviceId)
+      }
+    }
     window.addEventListener('nd:client-name-updated', handleNameUpdate)
-    return () => window.removeEventListener('nd:client-name-updated', handleNameUpdate)
+    window.addEventListener('nd:output-device-changed', handleDeviceChanged)
+    return () => {
+      window.removeEventListener('nd:client-name-updated', handleNameUpdate)
+      window.removeEventListener('nd:output-device-changed', handleDeviceChanged)
+    }
   }, [])
 
   const loadDevices = useCallback(() => {
@@ -170,6 +185,9 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
       body: JSON.stringify({ deviceId: dev.id }),
     })
       .then(() => {
+        try {
+          localStorage.setItem('nd_active_output_device', dev.id)
+        } catch {}
         setActiveId(dev.id)
         window.dispatchEvent(
           new CustomEvent('nd:output-device-changed', { detail: { deviceId: dev.id, device: dev } }),
@@ -185,6 +203,9 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
   const handleSelectDevice = (dev) => {
     if (dev.id === 'local') {
       // Dual-track independent playback: switching to local operates local audio without stopping remote hardware
+      try {
+        localStorage.setItem('nd_active_output_device', 'local')
+      } catch {}
       setActiveId('local')
       window.dispatchEvent(
         new CustomEvent('nd:output-device-changed', { detail: { deviceId: 'local', device: dev } }),
@@ -197,11 +218,13 @@ const OutputDeviceSelector = ({ isDesktop, className }) => {
     doSelectDevice(dev, false)
   }
 
-  const activeDevice = devices.find((d) => d.id === activeId) || {
-    id: 'local',
-    name: '本机播放',
-    type: 'local',
-  }
+  const activeDevice =
+    devices.find((d) => d.id === activeId) ||
+    (activeId === 'hqplayer'
+      ? { id: 'hqplayer', name: 'HQPlayer', type: 'hqplayer' }
+      : activeId !== 'local'
+      ? { id: activeId, name: 'DLNA', type: 'dlna' }
+      : { id: 'local', name: '本机播放', type: 'local' })
 
   const getDeviceIcon = (dev) => {
     if (dev.type === 'hqplayer') return <MdTune size={18} />

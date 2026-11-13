@@ -143,6 +143,7 @@ func (s *PlayerSession) playAndRollbackOnError(devID string, track TrackMetadata
 		s.mu.Unlock()
 		log.Error(fmt.Sprintf("PlayerSession [%s]: playTrackOnDevice failed, rolled back state to stopped", devID), err)
 	}
+	s.mgr.NotifySessionChange()
 	return err
 }
 
@@ -257,7 +258,9 @@ func (s *PlayerSession) Pause() error {
 	s.mu.Unlock()
 
 	log.Info(fmt.Sprintf("PlayerSession [%s]: Paused at offset %.1fs", devID, s.timeOffset))
-	return s.mgr.controlDevice(context.Background(), devID, "pause", 0, 0)
+	err := s.mgr.controlDevice(context.Background(), devID, "pause", 0, 0)
+	s.mgr.NotifySessionChange()
+	return err
 }
 
 func (s *PlayerSession) Resume() error {
@@ -294,7 +297,9 @@ func (s *PlayerSession) Stop() error {
 	s.mu.Unlock()
 
 	log.Info(fmt.Sprintf("PlayerSession [%s]: Stopped", devID))
-	return s.mgr.controlDevice(context.Background(), devID, "stop", 0, 0)
+	err := s.mgr.controlDevice(context.Background(), devID, "stop", 0, 0)
+	s.mgr.NotifySessionChange()
+	return err
 }
 
 func (s *PlayerSession) Seek(offset float64) error {
@@ -314,14 +319,13 @@ func (s *PlayerSession) Seek(offset float64) error {
 	s.mu.Unlock()
 
 	log.Info(fmt.Sprintf("PlayerSession [%s]: Seek to %.1fs", devID, offset))
-	return s.mgr.controlDevice(context.Background(), devID, "seek", offset, 0)
+	err := s.mgr.controlDevice(context.Background(), devID, "seek", offset, 0)
+	s.mgr.NotifySessionChange()
+	return err
 }
 
 func (s *PlayerSession) armTimerLocked(duration float64, offset float64, epoch uint64) {
-	if s.timer != nil {
-		s.timer.Stop()
-		s.timer = nil
-	}
+	s.cancelTimerLocked()
 	if duration <= 0 {
 		return
 	}
@@ -414,9 +418,10 @@ func (s *PlayerSession) onTrackEnded(epoch uint64) {
 	s.mu.Unlock()
 
 	var hqpState, hqpTrack int
+	var hqpRaw string
 	var hqpErr error
 	if devID == "hqplayer" {
-		hqpState, hqpTrack, hqpErr = s.mgr.GetHQPlayerState(context.Background())
+		hqpState, hqpTrack, hqpRaw, hqpErr = s.mgr.GetHQPlayerStateRaw(context.Background())
 		if hqpErr == nil && hqpState == 2 && hqpTrack <= expectedHQPIdx && pollCount < 30 {
 			s.mu.Lock()
 			if atomic.LoadUint64(&s.epoch) == epoch && s.state == "playing" {
@@ -446,6 +451,7 @@ func (s *PlayerSession) onTrackEnded(epoch uint64) {
 		atomic.AddUint64(&s.epoch, 1)
 		s.mu.Unlock()
 		_ = s.mgr.controlDevice(context.Background(), devID, "stop", 0, 0)
+		s.mgr.NotifySessionChange()
 		return
 	}
 
@@ -469,13 +475,15 @@ func (s *PlayerSession) onTrackEnded(epoch uint64) {
 	s.mu.Unlock()
 
 	RecordOutputDebug("session_advance", map[string]any{
-		"deviceId": devID, "fromIdx": fromIdx, "toIdx": nextIdx, "queueLen": qLen, "playMode": pMode, "gapless": gapless, "id": track.TrackID,
+		"deviceId": devID, "fromIdx": fromIdx, "toIdx": nextIdx, "queueLen": qLen, "playMode": pMode,
+		"gapless": gapless, "id": track.TrackID, "hqpState": hqpState, "hqpTrack": hqpTrack, "hqpRaw": hqpRaw,
 	})
 	log.Info(fmt.Sprintf("PlayerSession [%s] Auto-Advance (mode=%s, gapless=%v): playing track %d/%d: %s - %s (%.1fs)",
 		devID, pMode, gapless, nextIdx+1, qLen, track.Title, track.Artist, track.Duration))
 
 	if gapless {
 		RecordOutputDebug("hqp_gapless", map[string]any{"toIdx": nextIdx, "hqpTrack": hqpTrack, "id": track.TrackID})
+		s.mgr.NotifySessionChange()
 		return
 	}
 

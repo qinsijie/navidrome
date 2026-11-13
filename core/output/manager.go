@@ -64,9 +64,10 @@ type Manager struct {
 	isScanning        sync.Mutex
 	currentTrack      TrackMetadata
 	playbackState     string
-	currentTimeOffset float64
-	playbackStartTime int64
-	session           *PlayerSession
+	currentTimeOffset  float64
+	playbackStartTime  int64
+	session            *PlayerSession
+	sessionBroadcaster func(NowPlayingInfo)
 }
 
 func GetManager() *Manager {
@@ -648,6 +649,30 @@ func (m *Manager) GetHQPlayerState(ctx context.Context) (int, int, error) {
 	hqCfg := m.hqConfig
 	m.mu.RUnlock()
 	return m.hqClient.GetState(ctx, hqCfg)
+}
+
+func (m *Manager) GetHQPlayerStateRaw(ctx context.Context) (int, int, string, error) {
+	m.mu.RLock()
+	hqCfg := m.hqConfig
+	m.mu.RUnlock()
+	return m.hqClient.GetStateRaw(ctx, hqCfg)
+}
+
+func (m *Manager) SetSessionBroadcaster(fn func(NowPlayingInfo)) {
+	m.mu.Lock()
+	m.sessionBroadcaster = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) NotifySessionChange() {
+	m.mu.RLock()
+	fn := m.sessionBroadcaster
+	m.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	info := m.GetNowPlaying()
+	go fn(info)
 }
 
 func (m *Manager) ControlPlaybackWithDetails(ctx context.Context, action string, index int, timeOffset float64, volume int, mode string) error {

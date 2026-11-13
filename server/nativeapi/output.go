@@ -283,6 +283,43 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		events.GetBroker().SendMessage(senderCtx, evt)
 	})
 
+	// Wire hardware PlayerSession state transitions to SSE broadcast so UI stays in real-time sync
+	mgr.SetSessionBroadcaster(func(info output.NowPlayingInfo) {
+		if info.DeviceID == "" || info.DeviceID == string(output.DeviceTypeLocal) {
+			return
+		}
+		evt := &events.UserPlaybackState{
+			TrackID:      info.Track.TrackID,
+			Title:        info.Track.Title,
+			Artist:       info.Track.Artist,
+			Album:        info.Track.Album,
+			Duration:     info.Track.Duration,
+			State:        info.State,
+			TimeOffset:   info.TimeOffset,
+			StartedAt:    info.StartedAt,
+			Epoch:        info.Epoch,
+			OutputTarget: info.DeviceID,
+			PlayMode:     info.PlayMode,
+			CurrentIndex: info.CurrentIndex,
+			Queue:        info.Queue,
+			Channel:      "remote",
+			ActiveEvent:  "remote",
+			Remote: output.ChannelSessionState{
+				Channel:      "remote",
+				DeviceID:     info.DeviceID,
+				Track:        info.Track,
+				Queue:        info.Queue,
+				State:        info.State,
+				TimeOffset:   info.TimeOffset,
+				StartedAt:    info.StartedAt,
+				Epoch:        info.Epoch,
+				PlayMode:     info.PlayMode,
+				CurrentIndex: info.CurrentIndex,
+			},
+		}
+		events.GetBroker().SendBroadcastMessage(context.Background(), evt)
+	})
+
 	r.Get("/output/devices", func(w http.ResponseWriter, r *http.Request) {
 		onlyEnabled := r.URL.Query().Get("enabled_only") == "true"
 		devices := mgr.GetDevices(r.Context(), onlyEnabled)

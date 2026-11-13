@@ -604,6 +604,22 @@ const Player = () => {
     }
   }, [playerState.queue, playerState.savedPlayIndex])
 
+  const syncRemoteUiIcon = useCallback((audio, isPlaying) => {
+    if (!audio || activeOutputDeviceRef.current === 'local') return
+    const fire = () => {
+      if (!audio || activeOutputDeviceRef.current === 'local') return
+      isSyntheticEventRef.current = true
+      try {
+        audio.dispatchEvent(new Event('canplay'))
+        audio.dispatchEvent(new Event(isPlaying ? 'play' : 'pause'))
+      } finally {
+        isSyntheticEventRef.current = false
+      }
+    }
+    fire()
+    setTimeout(fire, 80)
+  }, [])
+
   const syncChannelQueueToRedux = useCallback(
     (channelData, force = false) => {
       if (!channelData) return
@@ -613,7 +629,20 @@ const Player = () => {
       const currentQueue = playerStateRef.current?.queue || []
       const serverQueueKey = queue.map((t) => t.trackId).join(',')
       const localQueueKey = currentQueue.map((t) => t.trackId).join(',')
-      if (serverQueueKey && (serverQueueKey !== localQueueKey || force)) {
+      const targetIdx =
+        channelData.currentIndex >= 0 &&
+        channelData.currentIndex < queue.length
+          ? channelData.currentIndex
+          : 0
+      const targetTrack = queue[targetIdx]
+      const indexChanged =
+        playerStateRef.current?.savedPlayIndex !== targetIdx ||
+        playerStateRef.current?.current?.trackId !== targetTrack?.trackId
+
+      if (
+        serverQueueKey &&
+        (serverQueueKey !== localQueueKey || indexChanged || force)
+      ) {
         const mappedList = queue.map((t) => ({
           trackId: t.trackId,
           uuid: t.trackId,
@@ -635,16 +664,33 @@ const Player = () => {
             t.cover || t.coverUrl || subsonic.getCoverArtUrl({ id: t.trackId }, 300),
           ),
         }))
-        const targetIdx =
-          channelData.currentIndex >= 0 &&
-          channelData.currentIndex < mappedList.length
-            ? channelData.currentIndex
-            : 0
+        const syncMode = playerStateRef.current?.mode || 'orderLoop'
+        lastSyncedQueueKeyRef.current = `remote_${activeOutputDeviceRef.current}_${serverQueueKey}_${targetIdx}_${syncMode}`
+        isServerSyncRef.current = true
         dispatch(syncQueue(mappedList[targetIdx], mappedList))
         dispatch(currentPlaying(mappedList[targetIdx]))
+        if (targetTrack?.trackId) {
+          currentTrackIdRef.current = targetTrack.trackId
+          setCurrentTrackId(targetTrack.trackId)
+        }
+        if (
+          audioInstanceRef.current &&
+          typeof audioInstanceRef.current.playByIndex === 'function'
+        ) {
+          try {
+            audioInstanceRef.current.playByIndex(targetIdx)
+          } catch (e) {}
+        }
+        syncRemoteUiIcon(
+          audioInstanceRef.current,
+          channelData.state === 'playing' || remoteProgressRef.current.playing,
+        )
+        setTimeout(() => {
+          isServerSyncRef.current = false
+        }, 200)
       }
     },
-    [dispatch],
+    [dispatch, syncRemoteUiIcon],
   )
 
   // Listen to server UserSession SSE events for multi-device synchronized playback (Remote mode only)
@@ -724,16 +770,8 @@ const Player = () => {
         setCurrentTrackId(trackId)
       }
 
-      // 5. Update play/pause icon in UI without triggering onAudioPlay / onAudioPause network storm
-      if (audioInstance) {
-        isSyntheticEventRef.current = true
-        if (remoteData.state === 'playing') {
-          audioInstance.dispatchEvent(new Event('play'))
-        } else {
-          audioInstance.dispatchEvent(new Event('pause'))
-        }
-        isSyntheticEventRef.current = false
-      }
+      // 5. Clear loading spinner & update play/pause icon in UI without triggering onAudioPlay / onAudioPause network storm
+      syncRemoteUiIcon(audioInstance, remoteData.state === 'playing')
       lastLyricTextRef.current = ''
       lastLyricUpdateAtRef.current = 0
       setHeartbeatTrackId(null)
@@ -743,7 +781,7 @@ const Player = () => {
     return () => {
       window.removeEventListener('nd:user-playback-state', handleUserPlaybackState)
     }
-  }, [audioInstance, syncChannelQueueToRedux, dispatch])
+  }, [audioInstance, syncChannelQueueToRedux, dispatch, syncRemoteUiIcon])
 
   // Listen to popstate so mobile back gesture closes queue panel without leaving page
   useEffect(() => {
@@ -768,13 +806,57 @@ const Player = () => {
     httpClient('/api/output/devices?enabled_only=true')
       .then(({ json }) => {
         if (json?.devices) {
-          const activeDev = json.devices.find((d) => d.id === 'hqplayer')
+          const targetId = activeOutputDeviceRef.current
+          const activeDev =
+            json.devices.find((d) => d.id === targetId) ||
+            json.devices.find((d) => d.id === 'hqplayer')
           if (activeDev?.name) {
             activeDeviceNameRef.current = activeDev.name
           }
         }
       })
       .catch(() => {})
+
+    // On initial mount/refresh in Remote mode, immediately pull remote queue & status
+    // without waiting for user to re-select the device or next polling tick.
+    if (activeOutputDeviceRef.current !== 'local') {
+      const targetId = activeOutputDeviceRef.current
+      isSwitchingTargetRef.current = true
+      Promise.all([
+        httpClient(`/api/output/queue?deviceId=${targetId}`).catch(() => null),
+        httpClient('/api/output/status').catch(() => null),
+      ])
+        .then(([qRes, sRes]) => {
+          const sJson = sRes?.json
+          if (sJson) {
+            remoteProgressRef.current.baseSec = Number(sJson.timeOffset) || 0
+            remoteProgressRef.current.baseClientTime = Date.now()
+            remoteProgressRef.current.playing = sJson.state === 'playing'
+            remoteProgressRef.current.duration = Number(sJson.track?.duration) || 0
+            remoteProgressRef.current.trackId = sJson.track?.trackId || null
+            remoteProgressRef.current.currentIndex = sJson.currentIndex ?? -1
+            lastSyncedRemotePlayingRef.current = sJson.state === 'playing'
+          }
+          const qJson = qRes?.json
+          const merged =
+            qJson && qJson.queue && qJson.queue.length > 0
+              ? { ...qJson, state: sJson?.state || qJson.state }
+              : sJson && sJson.queue && sJson.queue.length > 0
+              ? sJson
+              : null
+          if (merged) {
+            syncChannelQueueToRedux(merged, true)
+          }
+          if (audioInstanceRef.current && sJson) {
+            syncRemoteUiIcon(audioInstanceRef.current, sJson.state === 'playing')
+          }
+        })
+        .finally(() => {
+          setTimeout(() => {
+            isSwitchingTargetRef.current = false
+          }, 400)
+        })
+    }
 
     const handleDeviceChanged = (e) => {
       const newId = e.detail?.deviceId || 'local'
@@ -1112,7 +1194,8 @@ const Player = () => {
         currentIndex: currentIdx,
       }
       virtualSecRef.current = 0
-      remoteSyncLockUntilRef.current = Date.now() + 2500
+      remoteSyncLockUntilRef.current = Date.now() + 1000
+      syncRemoteUiIcon(audioInstance, true)
     }
 
     httpClient('/api/output/queue', {
@@ -1172,7 +1255,20 @@ const Player = () => {
     }, 1000)
   }, [activeOutputDevice, playerState.queue, playerState.playIndex])
 
-  // Sync state from server session every 2 seconds
+  // Clear spinner whenever audioInstance attaches or track changes in Remote mode
+  useEffect(() => {
+    if (activeOutputDevice === 'local' || !audioInstance) return
+    syncRemoteUiIcon(audioInstance, remoteProgressRef.current.playing)
+  }, [
+    activeOutputDevice,
+    audioInstance,
+    playerState.current?.trackId,
+    playerState.playIndex,
+    playerState.savedPlayIndex,
+    syncRemoteUiIcon,
+  ])
+
+  // Sync state from server session every 1 second as fallback for SSE
   useInterval(
     () => {
       if (activeOutputDevice !== 'local') {
@@ -1190,19 +1286,21 @@ const Player = () => {
               remoteProgressRef.current.trackId = json.track?.trackId || null
               remoteProgressRef.current.currentIndex = json.currentIndex ?? -1
 
-              // Synchronize play/pause button icon with server state only when it changes
+              if (
+                json.queue &&
+                Array.isArray(json.queue) &&
+                json.queue.length > 0
+              ) {
+                syncChannelQueueToRedux(json, false)
+              }
+
+              // Synchronize play/pause button icon & clear any stuck spinner
               if (
                 audioInstance &&
                 lastSyncedRemotePlayingRef.current !== isServerPlaying
               ) {
                 lastSyncedRemotePlayingRef.current = isServerPlaying
-                isSyntheticEventRef.current = true
-                if (isServerPlaying) {
-                  audioInstance.dispatchEvent(new Event('play'))
-                } else {
-                  audioInstance.dispatchEvent(new Event('pause'))
-                }
-                isSyntheticEventRef.current = false
+                syncRemoteUiIcon(audioInstance, isServerPlaying)
               }
 
               // When server switches to another track, update Redux state so UI updates
@@ -1222,9 +1320,9 @@ const Player = () => {
                 dispatch(currentPlaying(newTrack))
                 currentTrackIdRef.current = newTrack.trackId
                 setCurrentTrackId(newTrack.trackId)
-                remoteProgressRef.current.baseSec = 0
+                remoteProgressRef.current.baseSec = Number(json.timeOffset) || 0
                 remoteProgressRef.current.baseClientTime = Date.now()
-                virtualSecRef.current = 0
+                virtualSecRef.current = Number(json.timeOffset) || 0
                 if (audioInstance && typeof audioInstance.playByIndex === 'function') {
                   try {
                     audioInstance.playByIndex(serverIdx)
@@ -1232,6 +1330,7 @@ const Player = () => {
                     // ignore
                   }
                 }
+                syncRemoteUiIcon(audioInstance, isServerPlaying)
                 setTimeout(() => {
                   isServerSyncRef.current = false
                 }, 200)
@@ -1241,7 +1340,7 @@ const Player = () => {
           .catch(() => {})
       }
     },
-    activeOutputDevice !== 'local' ? 2000 : null,
+    activeOutputDevice !== 'local' ? 1000 : null,
   )
 
   // Drive visual progress bar and time label forward smoothly every 500ms
@@ -1551,7 +1650,8 @@ const Player = () => {
             remoteProgressRef.current.duration = targetTrack.duration || 0
             remoteProgressRef.current.playing = true
             virtualSecRef.current = 0
-            remoteSyncLockUntilRef.current = Date.now() + 2500
+            remoteSyncLockUntilRef.current = Date.now() + 1000
+            syncRemoteUiIcon(audioInstanceRef.current, true)
 
             httpClient('/api/output/control', {
               method: 'POST',
@@ -1566,7 +1666,7 @@ const Player = () => {
         }
       }
     },
-    [dispatch],
+    [dispatch, syncRemoteUiIcon],
   )
 
   const onAudioPlay = useCallback(
@@ -2459,13 +2559,14 @@ const Player = () => {
       const target = e.target
       if (!target || typeof target.closest !== 'function') return
       const playBtn = target.closest(
-        '.react-jinke-music-player-main .play-btn, .react-jinke-music-player-main .music-player-controller',
+        '.react-jinke-music-player-main .play-btn, .react-jinke-music-player-main .loading-icon, .react-jinke-music-player-main .music-player-controller',
       )
       if (!playBtn) return
-      // Only intercept the play/pause button itself (not mini-player drag or other buttons)
+      // Only intercept the play/pause/loading button itself (not mini-player drag or other buttons)
       if (
         !playBtn.classList.contains('play-btn') &&
-        !target.closest('.play-btn')
+        !playBtn.classList.contains('loading-icon') &&
+        !target.closest('.play-btn, .loading-icon')
       ) {
         return
       }
@@ -2492,18 +2593,11 @@ const Player = () => {
         remoteProgressRef.current.playing = true
       }
 
-      remoteSyncLockUntilRef.current = now + 2000
+      remoteSyncLockUntilRef.current = now + 1500
       lastSyncedRemotePlayingRef.current = nextPlaying
 
       if (audioInstance) {
-        isSyntheticEventRef.current = true
-        try {
-          audioInstance.dispatchEvent(
-            new Event(nextPlaying ? 'play' : 'pause'),
-          )
-        } finally {
-          isSyntheticEventRef.current = false
-        }
+        syncRemoteUiIcon(audioInstance, nextPlaying)
       }
 
       httpClient('/api/output/control', {
@@ -2527,7 +2621,7 @@ const Player = () => {
         capture: true,
       })
     }
-  }, [audioInstance, notify])
+  }, [audioInstance, notify, syncRemoteUiIcon])
 
   const playerContent = (
     <PlayerErrorBoundary>

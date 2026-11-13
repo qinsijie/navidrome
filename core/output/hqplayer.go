@@ -285,9 +285,15 @@ func parseXMLIntAttr(xmlResp, attr string) (int, bool) {
 // GetState queries HQPlayer <State/> and returns (state, trackIndex, err).
 // In HQPlayer XML API: state 0=stopped, 1=paused, 2=playing; track is 0-based playlist index.
 func (c *HQPlayerClient) GetState(ctx context.Context, cfg HQPlayerConfig) (int, int, error) {
+	st, tr, _, err := c.GetStateRaw(ctx, cfg)
+	return st, tr, err
+}
+
+// GetStateRaw queries HQPlayer <State/> and returns (state, trackIndex, rawXML, err).
+func (c *HQPlayerClient) GetStateRaw(ctx context.Context, cfg HQPlayerConfig) (int, int, string, error) {
 	host := strings.TrimSpace(cfg.Host)
 	if host == "" {
-		return 0, -1, fmt.Errorf("HQPlayer host not configured")
+		return 0, -1, "", fmt.Errorf("HQPlayer host not configured")
 	}
 	port := cfg.Port
 	if port <= 0 {
@@ -297,28 +303,29 @@ func (c *HQPlayerClient) GetState(ctx context.Context, cfg HQPlayerConfig) (int,
 	d := net.Dialer{Timeout: 1500 * time.Millisecond}
 	conn, err := d.DialContext(ctx, "tcp", target)
 	if err != nil {
-		return 0, -1, err
+		return 0, -1, "", err
 	}
 	defer conn.Close()
 
 	_ = conn.SetDeadline(time.Now().Add(1500 * time.Millisecond))
 	if _, err := conn.Write([]byte("<State/>\n")); err != nil {
-		return 0, -1, err
+		return 0, -1, "", err
 	}
 	reader := bufio.NewReader(conn)
 	resp, err := reader.ReadString('\n')
 	if err != nil {
-		return 0, -1, err
+		return 0, -1, "", err
 	}
-	if !strings.Contains(resp, "<State") {
-		return 0, -1, fmt.Errorf("unexpected HQPlayer State response: %s", strings.TrimSpace(resp))
+	trimmed := strings.TrimSpace(resp)
+	if !strings.Contains(trimmed, "<State") {
+		return 0, -1, trimmed, fmt.Errorf("unexpected HQPlayer State response: %s", trimmed)
 	}
-	stateVal, _ := parseXMLIntAttr(resp, "state")
-	trackVal, ok := parseXMLIntAttr(resp, "track")
+	stateVal, _ := parseXMLIntAttr(trimmed, "state")
+	trackVal, ok := parseXMLIntAttr(trimmed, "track")
 	if !ok {
 		trackVal = -1
 	}
-	return stateVal, trackVal, nil
+	return stateVal, trackVal, trimmed, nil
 }
 
 // AppendTrack queues the next track URI into HQPlayer's active playlist without stopping playback.
