@@ -286,6 +286,13 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		_ = json.NewEncoder(w).Encode(status)
 	})
 
+	r.Get("/output/debug", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"events": output.GetOutputDebugEvents(),
+		})
+	})
+
 	r.Post("/output/device", func(w http.ResponseWriter, r *http.Request) {
 		var req selectDeviceRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

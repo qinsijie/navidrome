@@ -2403,6 +2403,84 @@ const Player = () => {
     }
   }, [audioInstance])
 
+  // Remote mode: intercept Play/Pause button clicks in capture phase because
+  // <audio> has musicSrc="" and all native <audio> callbacks are short-circuited.
+  useEffect(() => {
+    const handleRemotePlayPauseClick = (e) => {
+      if (activeOutputDeviceRef.current === 'local') return
+      const target = e.target
+      if (!target || typeof target.closest !== 'function') return
+      const playBtn = target.closest(
+        '.react-jinke-music-player-main .play-btn, .react-jinke-music-player-main .music-player-controller',
+      )
+      if (!playBtn) return
+      // Only intercept the play/pause button itself (not mini-player drag or other buttons)
+      if (
+        !playBtn.classList.contains('play-btn') &&
+        !target.closest('.play-btn')
+      ) {
+        return
+      }
+      e.preventDefault()
+      e.stopPropagation()
+
+      const prevPlaying = !!remoteProgressRef.current.playing
+      const nextPlaying = !prevPlaying
+      const now = Date.now()
+      const duration = remoteProgressRef.current.duration || 0
+
+      if (!nextPlaying) {
+        let elapsed = remoteProgressRef.current.baseSec || 0
+        if (prevPlaying && remoteProgressRef.current.baseClientTime > 0) {
+          elapsed += (now - remoteProgressRef.current.baseClientTime) / 1000
+          if (duration > 0) elapsed = Math.min(elapsed, duration)
+        }
+        remoteProgressRef.current.baseSec = elapsed
+        remoteProgressRef.current.baseClientTime = now
+        remoteProgressRef.current.playing = false
+        virtualSecRef.current = elapsed
+      } else {
+        remoteProgressRef.current.baseClientTime = now
+        remoteProgressRef.current.playing = true
+      }
+
+      remoteSyncLockUntilRef.current = now + 2000
+      lastSyncedRemotePlayingRef.current = nextPlaying
+
+      if (audioInstance) {
+        isSyntheticEventRef.current = true
+        try {
+          audioInstance.dispatchEvent(
+            new Event(nextPlaying ? 'play' : 'pause'),
+          )
+        } finally {
+          isSyntheticEventRef.current = false
+        }
+      }
+
+      httpClient('/api/output/control', {
+        method: 'POST',
+        body: JSON.stringify({
+          channel: 'remote',
+          deviceId: activeOutputDeviceRef.current,
+          action: nextPlaying ? 'play' : 'pause',
+        }),
+      }).catch((err) => {
+        console.error('[Remote:playPause] control failed:', err)
+        notify('Remote control failed', { type: 'warning' })
+      })
+    }
+
+    document.addEventListener('click', handleRemotePlayPauseClick, {
+      capture: true,
+    })
+    return () => {
+      document.removeEventListener('click', handleRemotePlayPauseClick, {
+        capture: true,
+      })
+    }
+  }, [audioInstance, notify])
+
   const playerContent = (
     <PlayerErrorBoundary>
       <ThemeProvider theme={createMuiTheme(theme)}>

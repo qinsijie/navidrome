@@ -298,24 +298,20 @@ func (m *Manager) SetActiveDevice(deviceID string) error {
 
 	oldDevID := m.activeDevID
 	m.activeDevID = deviceID
-	if m.session != nil {
-		if deviceID != string(DeviceTypeLocal) {
-			m.session.SetDeviceID(deviceID)
-		}
+	if oldDevID != deviceID {
+		m.playbackState = "stopped"
+		m.currentTimeOffset = 0
+		m.playbackStartTime = 0
 	}
-	hqCfg := m.hqConfig
+	sess := m.session
 	m.mu.Unlock()
 
-	// If switching between different remote hardware devices (e.g. hqplayer -> dlna), release the previous hardware
-	if oldDevID != "" && oldDevID != string(DeviceTypeLocal) && deviceID != string(DeviceTypeLocal) && deviceID != oldDevID {
-		go func(prevDev string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			_ = m.controlDevice(ctx, prevDev, "stop", 0, 0)
-			if prevDev == "hqplayer" {
-				_, _ = m.hqClient.SendHQPlayerXMLCommands(ctx, hqCfg, "<Stop/>", "<PlaylistClear/>")
-			}
-		}(oldDevID)
+	// Synchronously release the previous remote hardware (e.g. hqplayer -> dlna) before binding the new device
+	if sess != nil && oldDevID != "" && oldDevID != string(DeviceTypeLocal) && deviceID != string(DeviceTypeLocal) && deviceID != oldDevID {
+		_ = sess.Stop()
+	}
+	if sess != nil && deviceID != string(DeviceTypeLocal) {
+		sess.SetDeviceID(deviceID)
 	}
 
 	log.Info(fmt.Sprintf("Audio output destination switched to: %s", deviceID))
