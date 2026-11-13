@@ -3,6 +3,7 @@ package musicengine
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,9 +19,23 @@ import (
 )
 
 const (
-	DefaultMaxCacheBytes = 3 * 1024 * 1024 * 1024 // 3 GB
-	TargetLowWatermark   = 2400 * 1024 * 1024      // 2.4 GB (80%)
+	DefaultMaxCacheBytes int64 = 1 * 1024 * 1024 * 1024  // 1 GB
+	MinMaxCacheBytes     int64 = 256 * 1024 * 1024       // 256 MB
+	MaxAllowedCacheBytes int64 = 20 * 1024 * 1024 * 1024 // 20 GB
+	cacheConfigFileName        = "cache_config.json"
 )
+
+type cacheConfig struct {
+	MaxCacheMB int64 `json:"maxCacheMB"`
+}
+
+type CacheStats struct {
+	UsedBytes int64  `json:"usedBytes"`
+	FileCount int    `json:"fileCount"`
+	MaxBytes  int64  `json:"maxBytes"`
+	MaxMB     int64  `json:"maxMB"`
+	CacheDir  string `json:"cacheDir"`
+}
 
 type StreamCacheManager struct {
 	mu           sync.Mutex
@@ -46,12 +61,104 @@ func GetCacheManager() *StreamCacheManager {
 		}
 		cDir := filepath.Join(baseDir, "online_music")
 		_ = os.MkdirAll(cDir, 0755)
-		cacheMgrInstance = &StreamCacheManager{
+		mgr := &StreamCacheManager{
 			cacheDir:     cDir,
 			maxSizeBytes: DefaultMaxCacheBytes,
 		}
+		mgr.loadConfig()
+		cacheMgrInstance = mgr
 	})
 	return cacheMgrInstance
+}
+
+func (m *StreamCacheManager) configPath() string {
+	return filepath.Join(m.cacheDir, cacheConfigFileName)
+}
+
+func clampCacheBytes(b int64) int64 {
+	if b < MinMaxCacheBytes {
+		return MinMaxCacheBytes
+	}
+	if b > MaxAllowedCacheBytes {
+		return MaxAllowedCacheBytes
+	}
+	return b
+}
+
+func (m *StreamCacheManager) loadConfig() {
+	raw, err := os.ReadFile(m.configPath())
+	if err != nil {
+		return
+	}
+	var cfg cacheConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil || cfg.MaxCacheMB <= 0 {
+		return
+	}
+	m.maxSizeBytes = clampCacheBytes(cfg.MaxCacheMB * 1024 * 1024)
+}
+
+func (m *StreamCacheManager) GetCacheStats() CacheStats {
+	m.mu.Lock()
+	maxBytes := m.maxSizeBytes
+	cacheDir := m.cacheDir
+	m.mu.Unlock()
+
+	var usedBytes int64
+	var fileCount int
+	if entries, err := os.ReadDir(cacheDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".stream") {
+				continue
+			}
+			if info, err := entry.Info(); err == nil {
+				usedBytes += info.Size()
+				fileCount++
+			}
+		}
+	}
+
+	return CacheStats{
+		UsedBytes: usedBytes,
+		FileCount: fileCount,
+		MaxBytes:  maxBytes,
+		MaxMB:     maxBytes / (1024 * 1024),
+		CacheDir:  cacheDir,
+	}
+}
+
+func (m *StreamCacheManager) SetMaxCacheBytes(maxBytes int64) (CacheStats, error) {
+	clamped := clampCacheBytes(maxBytes)
+
+	m.mu.Lock()
+	m.maxSizeBytes = clamped
+	cfg := cacheConfig{MaxCacheMB: clamped / (1024 * 1024)}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err == nil {
+		err = os.WriteFile(m.configPath(), data, 0644)
+	}
+	m.mu.Unlock()
+
+	if err == nil {
+		go m.evictOldFilesIfNeeded()
+	}
+	return m.GetCacheStats(), err
+}
+
+// ClearCache removes all completed .stream cache files while leaving active .tmp downloads intact.
+func (m *StreamCacheManager) ClearCache() (CacheStats, error) {
+	m.mu.Lock()
+	entries, err := os.ReadDir(m.cacheDir)
+	if err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".stream") {
+				continue
+			}
+			_ = os.Remove(filepath.Join(m.cacheDir, entry.Name()))
+		}
+	}
+	m.mu.Unlock()
+
+	return m.GetCacheStats(), err
 }
 
 func (m *StreamCacheManager) keyForTrack(trackID string) string {
@@ -193,8 +300,9 @@ func (m *StreamCacheManager) evictOldFilesIfNeeded() {
 		return files[i].modTime.Before(files[j].modTime)
 	})
 
+	lowWatermark := int64(float64(m.maxSizeBytes) * 0.80)
 	for _, f := range files {
-		if totalSize <= TargetLowWatermark {
+		if totalSize <= lowWatermark {
 			break
 		}
 		if err := os.Remove(f.path); err == nil {

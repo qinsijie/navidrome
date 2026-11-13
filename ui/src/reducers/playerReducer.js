@@ -218,9 +218,9 @@ const reduceSyncQueue = (state, { data: { audioInfo, audioLists } }) => {
 
 const reduceCurrent = (state, { data }) => {
   const current = data.ended ? {} : data
-  const savedPlayIndex = state.queue.findIndex(
-    (item) => item.uuid === current.uuid,
-  )
+  const savedPlayIndex = data.ended
+    ? state.savedPlayIndex
+    : state.queue.findIndex((item) => item.uuid === current.uuid)
   // When a track selection is pending (playIndex is set), keep it alive
   // until the music player confirms it actually switched to the requested
   // track. Without this, a premature onAudioPlay callback for the

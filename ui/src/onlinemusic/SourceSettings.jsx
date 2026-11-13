@@ -16,6 +16,10 @@ import {
   Radio,
   Tooltip,
   IconButton,
+  Select,
+  MenuItem,
+  FormControl,
+  InputLabel,
   makeStyles,
 } from '@material-ui/core'
 import SettingsEthernetIcon from '@material-ui/icons/SettingsEthernet'
@@ -26,6 +30,7 @@ import DeleteOutlineIcon from '@material-ui/icons/DeleteOutline'
 import RefreshIcon from '@material-ui/icons/Refresh'
 import SpeedIcon from '@material-ui/icons/Speed'
 import LinkIcon from '@material-ui/icons/Link'
+import StorageIcon from '@material-ui/icons/Storage'
 import {
   getSources,
   uploadSource,
@@ -34,6 +39,9 @@ import {
   deleteSource,
   checkSourceUpdate,
   pingSources,
+  getOnlineCacheStats,
+  setOnlineCacheConfig,
+  clearOnlineCache,
 } from './api'
 
 const useStyles = makeStyles((theme) => ({
@@ -129,14 +137,32 @@ export const SourceSettings = () => {
   const [pinging, setPinging] = useState(false)
   const [pingResults, setPingResults] = useState(null)
 
+  // Online audio cache config
+  const [cacheStats, setCacheStats] = useState(null)
+  const [cacheLimitMB, setCacheLimitMB] = useState(1024)
+  const [savingCache, setSavingCache] = useState(false)
+  const [clearingCache, setClearingCache] = useState(false)
+
   // Hidden file input
   const fileInputRef = useRef(null)
+
+  const loadCacheStats = async () => {
+    try {
+      const res = await getOnlineCacheStats()
+      if (res) {
+        setCacheStats(res)
+        if (res.maxMB) setCacheLimitMB(res.maxMB)
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   const loadSources = async () => {
     setLoading(true)
     setErrorMsg('')
     try {
-      const res = await getSources()
+      const [res] = await Promise.all([getSources(), loadCacheStats()])
       setSources(res.sources || [])
       setActiveMeta(res.active || null)
     } catch (err) {
@@ -187,6 +213,49 @@ export const SourceSettings = () => {
     } catch (err) {
       alert('检查更新失败: ' + err.message)
     }
+  }
+
+  const handleSaveCacheLimit = async (nextMB) => {
+    setSavingCache(true)
+    setErrorMsg('')
+    try {
+      const res = await setOnlineCacheConfig(nextMB)
+      if (res) {
+        setCacheStats(res)
+        setCacheLimitMB(res.maxMB || nextMB)
+        setStatusMsg(`在线音频缓存上限已更新为 ${nextMB >= 1024 ? `${(nextMB / 1024).toFixed(nextMB % 1024 === 0 ? 0 : 1)} GB` : `${nextMB} MB`}`)
+      }
+    } catch (err) {
+      setErrorMsg('保存缓存设置失败: ' + (err.body || err.message))
+    } finally {
+      setSavingCache(false)
+    }
+  }
+
+  const handleClearCache = async () => {
+    if (!window.confirm('确定要清空已缓存的在线歌曲文件吗？（正在播放的曲目不会受影响）')) {
+      return
+    }
+    setClearingCache(true)
+    setErrorMsg('')
+    try {
+      const res = await clearOnlineCache()
+      if (res) {
+        setCacheStats(res)
+        setStatusMsg('在线音频缓存已清空')
+      }
+    } catch (err) {
+      setErrorMsg('清空缓存失败: ' + (err.body || err.message))
+    } finally {
+      setClearingCache(false)
+    }
+  }
+
+  const formatCacheBytes = (bytes) => {
+    if (!bytes || bytes <= 0) return '0 MB'
+    const mb = bytes / (1024 * 1024)
+    if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`
+    return `${mb.toFixed(1)} MB`
   }
 
   const handleImportFromUrl = async () => {
@@ -503,6 +572,71 @@ export const SourceSettings = () => {
           )
         })
       )}
+
+      {/* 在线音频缓存设置卡片 */}
+      <Card className={classes.card}>
+        <CardContent>
+          <Box
+            display="flex"
+            alignItems="center"
+            justifyContent="space-between"
+            flexWrap="wrap"
+            style={{ gap: 12 }}
+          >
+            <Box display="flex" alignItems="center" style={{ gap: 10 }}>
+              <StorageIcon color="primary" />
+              <Box>
+                <Typography variant="subtitle1" style={{ fontWeight: 600 }}>
+                  在线音频缓存（边听边存）
+                </Typography>
+                <Typography variant="body2" color="textSecondary">
+                  {cacheStats
+                    ? `已缓存 ${formatCacheBytes(cacheStats.usedBytes)} / ${formatCacheBytes(cacheStats.maxBytes)}（共 ${cacheStats.fileCount || 0} 首）`
+                    : '正在读取缓存状态...'}
+                </Typography>
+              </Box>
+            </Box>
+
+            <Box display="flex" alignItems="center" flexWrap="wrap" style={{ gap: 12 }}>
+              <FormControl variant="outlined" size="small" style={{ minWidth: 160 }}>
+                <InputLabel id="online-cache-limit-label">缓存空间上限</InputLabel>
+                <Select
+                  labelId="online-cache-limit-label"
+                  label="缓存空间上限"
+                  value={cacheLimitMB}
+                  disabled={savingCache}
+                  onChange={(e) => handleSaveCacheLimit(Number(e.target.value))}
+                >
+                  <MenuItem value={512}>512 MB</MenuItem>
+                  <MenuItem value={1024}>1 GB（默认）</MenuItem>
+                  <MenuItem value={2048}>2 GB</MenuItem>
+                  <MenuItem value={3072}>3 GB</MenuItem>
+                  <MenuItem value={5120}>5 GB</MenuItem>
+                  <MenuItem value={10240}>10 GB</MenuItem>
+                </Select>
+              </FormControl>
+
+              <Button
+                variant="outlined"
+                color="secondary"
+                size="small"
+                startIcon={
+                  clearingCache ? (
+                    <CircularProgress size={16} />
+                  ) : (
+                    <DeleteOutlineIcon fontSize="small" />
+                  )
+                }
+                disabled={clearingCache || !cacheStats?.fileCount}
+                onClick={handleClearCache}
+                style={{ height: 40, textTransform: 'none' }}
+              >
+                清空缓存
+              </Button>
+            </Box>
+          </Box>
+        </CardContent>
+      </Card>
 
       {/* 网络导入对话框 */}
       <Dialog open={openUrlDialog} onClose={() => !importingUrl && setOpenUrlDialog(false)} maxWidth="sm" fullWidth>

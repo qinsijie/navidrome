@@ -92,3 +92,23 @@ export const pingSources = async () => {
   })
   return response.json
 }
+
+export const getOnlineCacheStats = async () => {
+  const response = await httpClient('/api/musicengine/cache')
+  return response.json
+}
+
+export const setOnlineCacheConfig = async (maxMB) => {
+  const response = await httpClient('/api/musicengine/cache/config', {
+    method: 'POST',
+    body: JSON.stringify({ maxMB }),
+  })
+  return response.json
+}
+
+export const clearOnlineCache = async () => {
+  const response = await httpClient('/api/musicengine/cache', {
+    method: 'DELETE',
+  })
+  return response.json
+}

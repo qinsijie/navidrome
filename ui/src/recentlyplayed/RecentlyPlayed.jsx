@@ -426,7 +426,11 @@ export const RecentlyPlayed = () => {
                 <div
                   key={track.id || idx}
                   className={classes.trackItem}
-                  onClick={(e) => handlePlay(track, e)}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setMenuAnchorEl(e.currentTarget)
+                    setActiveMenuTrack(track)
+                  }}
                 >
                   <div className={classes.indexCol}>{idx + 1}</div>
 

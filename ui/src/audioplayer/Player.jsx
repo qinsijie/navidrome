@@ -1375,7 +1375,7 @@ const Player = () => {
         ? playerState.playIndex
         : playerState.savedPlayIndex != null && playerState.savedPlayIndex >= 0
         ? playerState.savedPlayIndex
-        : 0
+        : undefined
     return {
       ...defaultOptions,
       audioLists: hasQueue

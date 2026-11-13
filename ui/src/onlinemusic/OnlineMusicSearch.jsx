@@ -21,15 +21,18 @@ import {
   ListItem,
   ListItemText,
   ListItemIcon,
+  Divider,
 } from '@material-ui/core'
 import PlayArrowIcon from '@material-ui/icons/PlayArrow'
+import PlaylistPlayIcon from '@material-ui/icons/PlaylistPlay'
 import PlaylistAddIcon from '@material-ui/icons/PlaylistAdd'
 import QueueMusicIcon from '@material-ui/icons/QueueMusic'
 import SearchIcon from '@material-ui/icons/Search'
+import HistoryIcon from '@material-ui/icons/History'
 import ClearIcon from '@material-ui/icons/Clear'
 import MoreVertIcon from '@material-ui/icons/MoreVert'
 import ArrowDropDownIcon from '@material-ui/icons/ArrowDropDown'
-import { playTracks, addTracks, openAddToPlaylist } from '../actions'
+import { playTracks, playNext, addTracks, openAddToPlaylist } from '../actions'
 import { sanitizeImageUrl } from '../utils'
 import { searchOnline, ensureShadowTrack, getSearchTips } from './api'
 import { QualityBadge, SourceBadge } from './QualityBadge'
@@ -227,6 +230,27 @@ const SOURCE_OPTIONS = [
   { id: 'mg', label: '🍯 小蜜音乐' },
 ]
 
+const SEARCH_HISTORY_KEY = 'nd_online_search_history'
+const MAX_SEARCH_HISTORY = 10
+
+const loadSearchHistory = () => {
+  try {
+    const raw = localStorage.getItem(SEARCH_HISTORY_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.slice(0, MAX_SEARCH_HISTORY) : []
+  } catch {
+    return []
+  }
+}
+
+const persistSearchHistory = (list) => {
+  try {
+    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(list))
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
 export const OnlineMusicSearch = () => {
   const classes = useStyles()
   const dispatch = useDispatch()
@@ -241,9 +265,10 @@ export const OnlineMusicSearch = () => {
   // Source selection menu
   const [sourceAnchorEl, setSourceAnchorEl] = useState(null)
 
-  // Tips autocomplete
+  // Tips autocomplete & search history
   const [tips, setTips] = useState([])
   const [showTips, setShowTips] = useState(false)
+  const [searchHistory, setSearchHistory] = useState(() => loadSearchHistory())
 
   // Track action menu
   const [menuAnchorEl, setMenuAnchorEl] = useState(null)
@@ -252,15 +277,40 @@ export const OnlineMusicSearch = () => {
   const searchBoxRef = useRef(null)
   const skipTipsRef = useRef(false)
 
+  const recordSearchHistory = useCallback((term) => {
+    const trimmed = (term || '').trim()
+    if (!trimmed) return
+    setSearchHistory((prev) => {
+      const next = [trimmed, ...prev.filter((item) => item !== trimmed)].slice(
+        0,
+        MAX_SEARCH_HISTORY,
+      )
+      persistSearchHistory(next)
+      return next
+    })
+  }, [])
+
+  const clearSearchHistory = useCallback(() => {
+    setSearchHistory([])
+    try {
+      localStorage.removeItem(SEARCH_HISTORY_KEY)
+    } catch {
+      // ignore
+    }
+    setShowTips(false)
+  }, [])
+
   const doSearch = useCallback(
     async (src, query) => {
-      if (!query || query.trim() === '') {
+      const trimmed = (query || '').trim()
+      if (!trimmed) {
         setResults([])
         return
       }
+      recordSearchHistory(trimmed)
       setLoading(true)
       try {
-        const res = await searchOnline(src, query.trim(), 1, 30)
+        const res = await searchOnline(src, trimmed, 1, 30)
         setResults(res.list || [])
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -270,7 +320,7 @@ export const OnlineMusicSearch = () => {
         setLoading(false)
       }
     },
-    [],
+    [recordSearchHistory],
   )
 
   // 150ms debounced search tips
@@ -281,7 +331,6 @@ export const OnlineMusicSearch = () => {
     }
     if (!keyword || keyword.trim() === '') {
       setTips([])
-      setShowTips(false)
       return
     }
 
@@ -359,6 +408,13 @@ export const OnlineMusicSearch = () => {
     // Synchronously dispatch within user gesture to guarantee mobile autoplay
     dispatch(playTracks({ [mf.id]: mf }, [mf.id], mf.id))
     // Sync to backend shadow track without blocking audio playback
+    ensureShadowTrack(track).catch(() => {})
+  }
+
+  const handlePlayNext = (track, e) => {
+    if (e) e.stopPropagation()
+    const mf = buildClientMediaFile(track)
+    dispatch(playNext({ [mf.id]: mf }, [mf.id]))
     ensureShadowTrack(track).catch(() => {})
   }
 
@@ -449,7 +505,14 @@ export const OnlineMusicSearch = () => {
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
                 onKeyDown={handleKeyDown}
-                onFocus={() => tips.length > 0 && setShowTips(true)}
+                onFocus={() => {
+                  if (
+                    (keyword.trim() === '' && searchHistory.length > 0) ||
+                    (keyword.trim() !== '' && tips.length > 0)
+                  ) {
+                    setShowTips(true)
+                  }
+                }}
                 InputProps={{
                   endAdornment: keyword ? (
                     <IconButton
@@ -457,7 +520,7 @@ export const OnlineMusicSearch = () => {
                       onClick={() => {
                         setKeyword('')
                         setTips([])
-                        setShowTips(false)
+                        setShowTips(searchHistory.length > 0)
                       }}
                     >
                       <ClearIcon fontSize="small" />
@@ -476,27 +539,71 @@ export const OnlineMusicSearch = () => {
                 }}
               />
 
-              {showTips && tips.length > 0 && (
-                <ClickAwayListener onClickAway={() => setShowTips(false)}>
-                  <Paper className={classes.tipsPaper}>
-                    <List dense>
-                      {tips.map((tip, idx) => (
-                        <ListItem
-                          key={idx}
-                          className={classes.tipItem}
-                          button
-                          onClick={() => handleSelectTip(tip)}
-                        >
-                          <ListItemIcon style={{ minWidth: 32 }}>
-                            <SearchIcon fontSize="small" color="disabled" />
-                          </ListItemIcon>
-                          <ListItemText primary={tip} />
-                        </ListItem>
-                      ))}
-                    </List>
-                  </Paper>
-                </ClickAwayListener>
-              )}
+              {showTips &&
+                (keyword.trim() === ''
+                  ? searchHistory.length > 0
+                  : tips.length > 0) && (
+                  <ClickAwayListener onClickAway={() => setShowTips(false)}>
+                    <Paper className={classes.tipsPaper}>
+                      {keyword.trim() === '' ? (
+                        <List dense>
+                          <Box
+                            display="flex"
+                            alignItems="center"
+                            justifyContent="space-between"
+                            px={2}
+                            py={0.75}
+                          >
+                            <Typography variant="caption" color="textSecondary">
+                              最近搜索
+                            </Typography>
+                            <Button
+                              size="small"
+                              onClick={clearSearchHistory}
+                              style={{
+                                minWidth: 'auto',
+                                padding: '0 6px',
+                                fontSize: '0.75rem',
+                              }}
+                            >
+                              清空
+                            </Button>
+                          </Box>
+                          <Divider />
+                          {searchHistory.map((item, idx) => (
+                            <ListItem
+                              key={`hist-${idx}`}
+                              className={classes.tipItem}
+                              button
+                              onClick={() => handleSelectTip(item)}
+                            >
+                              <ListItemIcon style={{ minWidth: 32 }}>
+                                <HistoryIcon fontSize="small" color="disabled" />
+                              </ListItemIcon>
+                              <ListItemText primary={item} />
+                            </ListItem>
+                          ))}
+                        </List>
+                      ) : (
+                        <List dense>
+                          {tips.map((tip, idx) => (
+                            <ListItem
+                              key={idx}
+                              className={classes.tipItem}
+                              button
+                              onClick={() => handleSelectTip(tip)}
+                            >
+                              <ListItemIcon style={{ minWidth: 32 }}>
+                                <SearchIcon fontSize="small" color="disabled" />
+                              </ListItemIcon>
+                              <ListItemText primary={tip} />
+                            </ListItem>
+                          ))}
+                        </List>
+                      )}
+                    </Paper>
+                  </ClickAwayListener>
+                )}
             </div>
           </div>
 
@@ -580,6 +687,17 @@ export const OnlineMusicSearch = () => {
                 <PlayArrowIcon fontSize="small" />
               </ListItemIcon>
               <ListItemText primary="立即播放" />
+            </MenuItem>
+            <MenuItem
+              onClick={(e) => {
+                if (activeMenuTrack) handlePlayNext(activeMenuTrack, e)
+                setMenuAnchorEl(null)
+              }}
+            >
+              <ListItemIcon>
+                <PlaylistPlayIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText primary="添加到下一首" />
             </MenuItem>
             <MenuItem
               onClick={(e) => {

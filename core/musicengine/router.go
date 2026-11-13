@@ -60,6 +60,11 @@ func (api *Router) routes() http.Handler {
 	r.Get("/stream", api.handleStream)
 	r.Get("/stream/{id}", api.handleStream)
 
+	// Online audio cache management
+	r.Get("/cache", api.handleGetCacheStats)
+	r.Post("/cache/config", api.handleSetCacheConfig)
+	r.Delete("/cache", api.handleClearCache)
+
 	return r
 }
 
@@ -465,4 +470,37 @@ func (api *Router) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	relay.ServeHTTP(w, r)
+}
+
+func (api *Router) handleGetCacheStats(w http.ResponseWriter, r *http.Request) {
+	stats := GetCacheManager().GetCacheStats()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(stats)
+}
+
+func (api *Router) handleSetCacheConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MaxMB int64 `json:"maxMB"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.MaxMB <= 0 {
+		http.Error(w, "Invalid maxMB value", http.StatusBadRequest)
+		return
+	}
+	stats, err := GetCacheManager().SetMaxCacheBytes(req.MaxMB * 1024 * 1024)
+	if err != nil {
+		http.Error(w, "Failed to save cache config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(stats)
+}
+
+func (api *Router) handleClearCache(w http.ResponseWriter, r *http.Request) {
+	stats, err := GetCacheManager().ClearCache()
+	if err != nil {
+		http.Error(w, "Failed to clear cache: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(stats)
 }
