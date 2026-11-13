@@ -1055,7 +1055,6 @@ const Player = () => {
       if (!audioInstance.paused) {
         audioInstance.pause()
       }
-      audioInstance.currentTime = 0
       isSyntheticEventRef.current = false
     }
 
@@ -1511,6 +1510,16 @@ const Player = () => {
         return
       }
 
+      if (activeOutputDeviceRef.current !== 'local') {
+        if (audioInstance) {
+          audioInstance.muted = true
+          if (!audioInstance.paused) {
+            audioInstance.pause()
+          }
+        }
+        return
+      }
+
       isUserExplicitlyPausedRef.current = false
       startSilentKeepAlive()
 
@@ -1521,59 +1530,6 @@ const Player = () => {
       dispatch(currentPlaying(info))
       if (info.isPlaceholder) return
       recordRecentlyPlayed(info)
-
-      // Real remote streaming dispatch: keep local audio DOM powered off and send play to server session
-      if (activeOutputDeviceRef.current !== 'local') {
-        if (audioInstance) {
-          isSyntheticEventRef.current = true
-          audioInstance.muted = true
-          if (!audioInstance.paused) {
-            audioInstance.pause()
-          }
-          audioInstance.currentTime = 0
-          isSyntheticEventRef.current = false
-        }
-        if (Date.now() < remoteSyncLockUntilRef.current) {
-          return
-        }
-        const targetIndex = playerStateRef.current?.queue?.findIndex(
-          (item) => item.trackId === info.trackId,
-        )
-        if (
-          targetIndex >= 0 &&
-          targetIndex !== remoteProgressRef.current.currentIndex
-        ) {
-          remoteProgressRef.current.currentIndex = targetIndex
-          remoteProgressRef.current.trackId = info.trackId
-          remoteProgressRef.current.baseSec = 0
-          remoteProgressRef.current.baseClientTime = Date.now()
-          remoteProgressRef.current.duration = info.duration || 0
-          remoteProgressRef.current.playing = true
-          virtualSecRef.current = 0
-          httpClient('/api/output/control', {
-            method: 'POST',
-            body: JSON.stringify({
-              channel: 'remote',
-              deviceId: activeOutputDeviceRef.current,
-              action: 'jump',
-              index: targetIndex,
-            }),
-          }).catch(() => {})
-        } else {
-          if (!remoteProgressRef.current.playing) {
-            remoteProgressRef.current.playing = true
-            remoteProgressRef.current.baseClientTime = Date.now()
-            httpClient('/api/output/control', {
-              method: 'POST',
-              body: JSON.stringify({
-                channel: 'remote',
-                deviceId: activeOutputDeviceRef.current,
-                action: 'play',
-              }),
-            }).catch(() => {})
-          }
-        }
-      }
 
       if (info.duration) {
         const song = info.song || {}
@@ -1645,6 +1601,10 @@ const Player = () => {
 
   const onAudioPause = useCallback(
     (info) => {
+      if (activeOutputDeviceRef.current !== 'local') {
+        return
+      }
+
       const isRecentUserInteraction =
         document.visibilityState === 'visible' &&
         Date.now() - lastUserInteractionTimeRef.current < 1200
