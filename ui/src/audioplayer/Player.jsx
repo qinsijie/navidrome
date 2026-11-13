@@ -165,10 +165,13 @@ const Player = () => {
   const silentKeepAliveRef = useRef(null)
   const interruptionTimerRef = useRef(null)
   const needsNetworkResumeRef = useRef(false)
-  const pendingSeekSecRef = useRef(null)
+  const pendingSeekTargetRef = useRef(null)
   const lastWatchdogTimeRef = useRef(0)
   const watchdogStallCountRef = useRef(0)
   const lastUserInteractionTimeRef = useRef(0)
+  const lastReanchorTimeRef = useRef(0)
+  const trackErrorCountRef = useRef({})
+  const consecutiveSkipCountRef = useRef(0)
 
   // Global user interaction tracker & slider touchcancel / blur cleanup guard
   useEffect(() => {
@@ -258,23 +261,38 @@ const Player = () => {
 
   const reanchorAudioStream = useCallback((audio, targetSec) => {
     if (!audio) return
+    const now = Date.now()
+    if (
+      now - lastReanchorTimeRef.current < 8000 &&
+      lastReanchorTimeRef.current > 0
+    ) {
+      logAudioGuard('[StreamReanchor] Throttled by 8s cooldown, skipping.')
+      return
+    }
+    lastReanchorTimeRef.current = now
+
     try {
       const curSrc = audio.src
       if (curSrc && !curSrc.startsWith('blob:') && !curSrc.startsWith('data:')) {
         const u = new URL(curSrc, window.location.href)
-        u.searchParams.set('_t', String(Date.now()))
+        u.searchParams.set('_t', String(now))
         logAudioGuard(
           `[StreamReanchor] Re-anchoring stream with _t=${u.searchParams.get('_t')}, targetSec=${targetSec?.toFixed(2)}s`,
         )
+        pendingSeekTargetRef.current = targetSec
         audio.src = u.toString()
         audio.load()
-        pendingSeekSecRef.current = targetSec
         const p = audio.play()
         if (p && p.then) {
           p.then(() => {
             logAudioGuard('[StreamReanchor] Re-anchored stream play succeeded')
           }).catch((err) => {
-            warnAudioGuard('[StreamReanchor] Re-anchored stream play rejected:', err)
+            warnAudioGuard(
+              '[StreamReanchor] Re-anchored stream play rejected:',
+              err,
+            )
+            // If play rejected in background (DOMException / NotAllowedError), do NOT re-anchor in a loop!
+            needsNetworkResumeRef.current = true
           })
         }
       }
@@ -283,7 +301,7 @@ const Player = () => {
     }
   }, [])
 
-  // Watchdog: Check every 3 seconds for fake playing (time stalled for >= 4s while supposed to be playing)
+  // Watchdog: Check every 3 seconds for fake playing (time stalled for >= 6s with buffer starvation readyState <= 2)
   useInterval(
     () => {
       if (
@@ -301,26 +319,54 @@ const Player = () => {
 
       const curTime = audioInstance.currentTime || 0
       const prevTime = lastWatchdogTimeRef.current
+      const readyState = audioInstance.readyState
+      const networkState = audioInstance.networkState
 
       if (Math.abs(curTime - prevTime) < 0.2) {
         watchdogStallCountRef.current += 1
         logAudioGuard(
-          `[Watchdog] Potential playback stall detected (${watchdogStallCountRef.current}/2): curTime=${curTime.toFixed(2)}s, readyState=${audioInstance.readyState}, networkState=${audioInstance.networkState}, onLine=${navigator.onLine}`,
+          `[Watchdog] Stagnant time detected (${watchdogStallCountRef.current}/3): curTime=${curTime.toFixed(2)}s, readyState=${readyState}, networkState=${networkState}, onLine=${navigator.onLine}`,
         )
-        if (watchdogStallCountRef.current >= 2) {
-          warnAudioGuard(
-            `[Watchdog] Playback STALLED for >= 4s! Triggering auto-recovery at ${curTime.toFixed(2)}s...`,
-          )
+
+        // Require 3 consecutive stagnant ticks (>= 6s freeze)
+        if (watchdogStallCountRef.current >= 3) {
           watchdogStallCountRef.current = 0
+
+          // STRICT RULE 1: If buffer is充足 (readyState >= 3: HAVE_FUTURE_DATA / HAVE_ENOUGH_DATA),
+          // media decoder has data and is not starved. DO NOT re-anchor stream!
+          if (readyState >= 3) {
+            logAudioGuard(
+              `[Watchdog] Buffer is sufficient (readyState=${readyState} >= 3). Skipping stream reload to prevent false interruption.`,
+            )
+            return
+          }
+
+          // STRICT RULE 2: If offline, suspend gracefully and wait for online
           if (!navigator.onLine) {
             logAudioGuard(
-              '[Watchdog] Network is offline, marking needsNetworkResumeRef and suspending',
+              '[Watchdog] Network is offline, marking needsNetworkResumeRef and suspending until network returns',
             )
             needsNetworkResumeRef.current = true
             lastPositionMsRef.current = Math.floor(curTime * 1000)
-          } else {
-            reanchorAudioStream(audioInstance, curTime)
+            return
           }
+
+          // STRICT RULE 3: Cooldown guard (at least 8s between reanchors)
+          const now = Date.now()
+          if (
+            now - lastReanchorTimeRef.current < 8000 &&
+            lastReanchorTimeRef.current > 0
+          ) {
+            logAudioGuard(
+              `[Watchdog] Reanchor cooldown active (${Math.round((8000 - (now - lastReanchorTimeRef.current)) / 1000)}s remaining), skipping.`,
+            )
+            return
+          }
+
+          warnAudioGuard(
+            `[Watchdog] Audio buffer starved (readyState=${readyState} <= 2) and time frozen for >= 6s! Triggering reanchor at ${curTime.toFixed(2)}s...`,
+          )
+          reanchorAudioStream(audioInstance, curTime)
         }
       } else {
         watchdogStallCountRef.current = 0
@@ -1614,8 +1660,7 @@ const Player = () => {
       dispatch(currentPlaying(info))
       dataProvider
         .getOne('keepalive', { id: info.trackId })
-        // eslint-disable-next-line no-console
-        .catch((e) => console.log('Keepalive error:', e))
+        .catch(() => {})
     },
     [dispatch, dataProvider, currentTrackId],
   )
@@ -1787,6 +1832,9 @@ const Player = () => {
       isUserExplicitlyPausedRef.current = false
       needsNetworkResumeRef.current = false
       watchdogStallCountRef.current = 0
+      if (currentTrackIdRef.current) {
+        trackErrorCountRef.current[currentTrackIdRef.current] = 0
+      }
       logAudioGuard(
         `[Audio:play] Started. trackId=${currentTrackIdRef.current}, currentTime=${audioInstance?.currentTime?.toFixed(2)}s, network=${navigator.onLine ? 'online' : 'offline'}`,
       )
@@ -1879,6 +1927,10 @@ const Player = () => {
     const handleTimeUpdate = () => {
       if (audioInstance.currentTime != null && !isNaN(audioInstance.currentTime)) {
         lastPositionMsRef.current = Math.floor(audioInstance.currentTime * 1000)
+        // If track has played smoothly for >= 3 seconds, reset the consecutive skip avalanche counter!
+        if (audioInstance.currentTime >= 3.0 && consecutiveSkipCountRef.current > 0) {
+          consecutiveSkipCountRef.current = 0
+        }
         if (currentTrackIdRef.current) {
           try {
             sessionStorage.setItem(
@@ -1891,33 +1943,24 @@ const Player = () => {
       updatePositionState()
     }
 
-    // Recover playback position on metadata loaded or resume
+    // Recover playback position on metadata loaded with one-shot lock
     const handleRestorePosition = () => {
-      const trackId = currentTrackIdRef.current
-      let savedSec = (lastPositionMsRef.current || 0) / 1000
-      if (pendingSeekSecRef.current != null && pendingSeekSecRef.current > 0) {
-        savedSec = pendingSeekSecRef.current
-        pendingSeekSecRef.current = null
-      } else if (savedSec <= 2 && trackId) {
-        try {
-          const val = parseFloat(sessionStorage.getItem('nd_pos_' + trackId))
-          if (!isNaN(val) && val > 2) {
-            savedSec = val
-          }
-        } catch (e) {}
-      }
-
-      if (
-        savedSec > 2 &&
-        audioInstance &&
-        !audioInstance.ended &&
-        audioInstance.duration &&
-        savedSec < audioInstance.duration - 2
-      ) {
-        try {
-          logAudioGuard(`[Audio:restorePosition] Seeking to ${savedSec.toFixed(2)}s`)
-          audioInstance.currentTime = savedSec
-        } catch (e) {}
+      const target = pendingSeekTargetRef.current
+      pendingSeekTargetRef.current = null // 一次性立即消费，清空锁
+      if (target != null && target > 0) {
+        if (
+          audioInstance &&
+          audioInstance.duration &&
+          target < audioInstance.duration - 2 &&
+          Math.abs((audioInstance.currentTime || 0) - target) > 1.5
+        ) {
+          try {
+            logAudioGuard(
+              `[Audio:restorePosition] One-shot seeking to ${target.toFixed(2)}s`,
+            )
+            audioInstance.currentTime = target
+          } catch (e) {}
+        }
       }
     }
 
@@ -1968,7 +2011,13 @@ const Player = () => {
           acquireWakeLock()
           startSilentKeepAlive()
         }
-        handleRestorePosition()
+        if (
+          audioInstance.currentTime === 0 &&
+          (lastPositionMsRef.current || 0) > 2000
+        ) {
+          pendingSeekTargetRef.current = (lastPositionMsRef.current || 0) / 1000
+          handleRestorePosition()
+        }
       }
     }
 
@@ -1986,17 +2035,55 @@ const Player = () => {
 
     const handleError = () => {
       const err = audioInstance?.error
-      warnAudioGuard(`[Audio:error] code=${err?.code}, message=${err?.message}`)
+      const errCode = err?.code
+      warnAudioGuard(
+        `[Audio:error] code=${errCode}, message=${err?.message}`,
+      )
       if (
         activeOutputDeviceRef.current === 'local' &&
         !isUserExplicitlyPausedRef.current &&
         currentTrackIdRef.current
       ) {
-        needsNetworkResumeRef.current = true
-        if (audioInstance?.currentTime > 0) {
-          lastPositionMsRef.current = Math.floor(
-            audioInstance.currentTime * 1000,
+        const curTrackId = currentTrackIdRef.current
+        const retries = trackErrorCountRef.current[curTrackId] || 0
+
+        // If error code is 4 (format error) or 2 (network error)
+        if ((errCode === 4 || errCode === 2) && retries < 1) {
+          trackErrorCountRef.current[curTrackId] = retries + 1
+          warnAudioGuard(
+            `[Audio:error] Stream format/network error (code=${errCode}) on track ${curTrackId}. Auto-retry (1/1) in 1000ms...`,
           )
+          setTimeout(() => {
+            if (
+              currentTrackIdRef.current === curTrackId &&
+              audioInstance &&
+              activeOutputDeviceRef.current === 'local' &&
+              !isUserExplicitlyPausedRef.current
+            ) {
+              reanchorAudioStream(
+                audioInstance,
+                (lastPositionMsRef.current || 0) / 1000,
+              )
+            }
+          }, 1000)
+        } else if (retries >= 1 || errCode === 4) {
+          // Retry failed or unrecoverable format error -> auto skip to next track with avalanche guard
+          if (consecutiveSkipCountRef.current >= 3) {
+            warnAudioGuard(
+              `[Audio:error] Consecutive skip limit reached (3 tracks failed in a row). Stopping auto-skip to prevent queue avalanche. Marking needsNetworkResumeRef.`,
+            )
+            needsNetworkResumeRef.current = true
+            trackErrorCountRef.current[curTrackId] = 0
+          } else {
+            consecutiveSkipCountRef.current += 1
+            warnAudioGuard(
+              `[Audio:error] Track ${curTrackId} failed permanently. Smoothly skipping to next track (consecutive skips: ${consecutiveSkipCountRef.current}/3)...`,
+            )
+            delete trackErrorCountRef.current[curTrackId]
+            if (typeof audioInstance?.playNext === 'function') {
+              audioInstance.playNext()
+            }
+          }
         }
       }
     }
@@ -2089,7 +2176,6 @@ const Player = () => {
     audioInstance.addEventListener('timeupdate', handleTimeUpdate)
     audioInstance.addEventListener('durationchange', updatePositionState)
     audioInstance.addEventListener('loadedmetadata', handleRestorePosition)
-    audioInstance.addEventListener('canplay', handleRestorePosition)
     audioInstance.addEventListener('stalled', handleStalled)
     audioInstance.addEventListener('waiting', handleWaiting)
     audioInstance.addEventListener('error', handleError)
@@ -2104,7 +2190,6 @@ const Player = () => {
       audioInstance.removeEventListener('timeupdate', handleTimeUpdate)
       audioInstance.removeEventListener('durationchange', updatePositionState)
       audioInstance.removeEventListener('loadedmetadata', handleRestorePosition)
-      audioInstance.removeEventListener('canplay', handleRestorePosition)
       audioInstance.removeEventListener('stalled', handleStalled)
       audioInstance.removeEventListener('waiting', handleWaiting)
       audioInstance.removeEventListener('error', handleError)
