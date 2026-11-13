@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/navidrome/navidrome/log"
@@ -26,6 +27,7 @@ type HQPlayerConfig struct {
 
 type HQPlayerClient struct {
 	client *http.Client
+	opMu   sync.Mutex
 }
 
 func NewHQPlayerClient() *HQPlayerClient {
@@ -120,6 +122,9 @@ func (c *HQPlayerClient) SendHQPlayerXMLCommands(ctx context.Context, cfg HQPlay
 
 // PlayRawStream pushes the direct raw audio stream URL to HQPlayer via Signalyst XML-over-TCP protocol on port 4321
 func (c *HQPlayerClient) PlayRawStream(ctx context.Context, cfg HQPlayerConfig, streamURL string, meta TrackMetadata, timeOffset float64) error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
 	if strings.TrimSpace(cfg.Host) == "" {
 		return fmt.Errorf("HQPlayer 主机未配置")
 	}
@@ -207,6 +212,12 @@ func (c *HQPlayerClient) PlayRawStream(ctx context.Context, cfg HQPlayerConfig, 
 
 // GracefulRelease stops playback, waits 500ms for ALSA/Diretta DMA buffer release, then clears the playlist.
 func (c *HQPlayerClient) GracefulRelease(ctx context.Context, cfg HQPlayerConfig) error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	return c.gracefulReleaseLocked(ctx, cfg)
+}
+
+func (c *HQPlayerClient) gracefulReleaseLocked(ctx context.Context, cfg HQPlayerConfig) error {
 	log.Info(fmt.Sprintf("HQPlayer: Executing graceful release sequence on %s (Stop -> 500ms delay -> PlaylistClear)", cfg.Host))
 	_, _ = c.SendHQPlayerXMLCommands(ctx, cfg, "<Stop/>")
 	time.Sleep(500 * time.Millisecond)
@@ -217,12 +228,15 @@ func (c *HQPlayerClient) GracefulRelease(ctx context.Context, cfg HQPlayerConfig
 // Control sends playback control action to HQPlayer via XML-over-TCP protocol
 // Note: "pause" is intentionally mapped to GracefulRelease to cleanly release HQPlayer DSP pipelines and DAC clock locks.
 func (c *HQPlayerClient) Control(ctx context.Context, cfg HQPlayerConfig, action string, timeOffset float64, volume int) error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
 	switch action {
 	case "play":
 		_, err := c.SendHQPlayerXMLCommands(ctx, cfg, "<Play/>")
 		return err
 	case "pause", "stop":
-		return c.GracefulRelease(ctx, cfg)
+		return c.gracefulReleaseLocked(ctx, cfg)
 	case "seek":
 		if timeOffset < 1.0 {
 			timeOffset = 0

@@ -22,8 +22,20 @@ import (
 
 const (
 	wavHeaderSize   = 44
-	pcmInitialBurst = 512 * 1024 // 512 KB initial burst to prime HQPE DSD256 modulator buffer without stalling
+	minPCMBurstSize = 512 * 1024      // 512 KB minimum initial burst
+	maxPCMBurstSize = 4 * 1024 * 1024 // 4 MB cap for high-res 192kHz/24bit streams
 )
+
+func calculatePCMBurstBytes(byteRate int) int {
+	burst := byteRate * 3 // ~3 seconds pre-buffer to prime HQPE DSD256 modulator
+	if burst < minPCMBurstSize {
+		return minPCMBurstSize
+	}
+	if burst > maxPCMBurstSize {
+		return maxPCMBurstSize
+	}
+	return burst
+}
 
 // IsDSDMedia reports whether the track is native DSD (.dsf / .dff), which must always remain raw passthrough.
 func IsDSDMedia(suffix, path string) bool {
@@ -215,6 +227,18 @@ func ServePCMStream(w http.ResponseWriter, r *http.Request, mf *model.MediaFile,
 	remaining := contentLen
 	currPos := start
 	pacingRate := stream.CalculatePCMPacingRate(pcmFmt.SampleRate, pcmFmt.Channels, pcmFmt.BitDepth)
+	burstBytes := calculatePCMBurstBytes(pcmFmt.ByteRate)
+
+	log.Info(r.Context(), "PCM Stream: Serving WAV stream",
+		"id", mf.ID,
+		"method", r.Method,
+		"range", r.Header.Get("Range"),
+		"sr", pcmFmt.SampleRate,
+		"ch", pcmFmt.Channels,
+		"bd", pcmFmt.BitDepth,
+		"contentLen", contentLen,
+		"burstKB", burstBytes/1024,
+	)
 
 	// Fast path: client only requested bytes inside the 44-byte WAV header
 	if currPos+remaining <= wavHeaderSize {
@@ -223,7 +247,7 @@ func ServePCMStream(w http.ResponseWriter, r *http.Request, mf *model.MediaFile,
 		} else {
 			w.WriteHeader(http.StatusOK)
 		}
-		pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, pcmInitialBurst)
+		pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, burstBytes)
 		hdr := BuildWAVHeader(pcmFmt)
 		_, _ = pw.Write(hdr[currPos : currPos+remaining])
 		return
@@ -365,7 +389,7 @@ func ServePCMStream(w http.ResponseWriter, r *http.Request, mf *model.MediaFile,
 		w.WriteHeader(http.StatusOK)
 	}
 
-	pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, pcmInitialBurst)
+	pw := stream.NewPacedResponseWriter(r.Context(), w, pacingRate, burstBytes)
 
 	// 1. Write WAV header slice if requested range starts inside header
 	if currPos < wavHeaderSize {

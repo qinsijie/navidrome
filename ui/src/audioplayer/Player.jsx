@@ -163,6 +163,7 @@ const Player = () => {
     currentIndex: -1,
   })
   const lastSyncedQueueKeyRef = useRef('')
+  const remoteSyncLockUntilRef = useRef(0)
   const isSyntheticEventRef = useRef(false)
   const localQueueSnapshotRef = useRef(null)
   const isUserExplicitlyPausedRef = useRef(false)
@@ -1048,6 +1049,30 @@ const Player = () => {
       playerState.clear || playerState.playIndex != null || isPlaying,
     )
 
+    if (audioInstance) {
+      isSyntheticEventRef.current = true
+      audioInstance.muted = true
+      if (!audioInstance.paused) {
+        audioInstance.pause()
+      }
+      audioInstance.currentTime = 0
+      isSyntheticEventRef.current = false
+    }
+
+    if (shouldAutoPlay && payloadTracks[currentIdx]) {
+      const targetItem = payloadTracks[currentIdx]
+      remoteProgressRef.current = {
+        baseSec: 0,
+        baseClientTime: Date.now(),
+        playing: true,
+        duration: targetItem.duration || 0,
+        trackId: targetItem.trackId,
+        currentIndex: currentIdx,
+      }
+      virtualSecRef.current = 0
+      remoteSyncLockUntilRef.current = Date.now() + 2500
+    }
+
     httpClient('/api/output/queue', {
       method: 'POST',
       body: JSON.stringify({
@@ -1055,10 +1080,7 @@ const Player = () => {
         deviceId: targetDevice,
         tracks: payloadTracks,
         startIndex: currentIdx,
-        timeOffset:
-          audioInstance?.currentTime && audioInstance.currentTime >= 1.0
-            ? audioInstance.currentTime
-            : 0,
+        timeOffset: 0,
         playMode: playerState.mode,
         autoPlay: shouldAutoPlay,
       }),
@@ -1108,6 +1130,9 @@ const Player = () => {
         httpClient('/api/output/status')
           .then(({ json }) => {
             if (json) {
+              if (Date.now() < remoteSyncLockUntilRef.current) {
+                return
+              }
               const isServerPlaying = json.state === 'playing'
               remoteProgressRef.current.baseSec = Number(json.timeOffset) || 0
               remoteProgressRef.current.baseClientTime = Date.now()
@@ -1451,7 +1476,10 @@ const Player = () => {
           setCurrentTrackId(targetTrack.trackId)
           dispatch(currentPlaying(targetTrack))
 
-          if (remoteProgressRef.current.currentIndex !== playIndex) {
+          if (
+            Date.now() >= remoteSyncLockUntilRef.current &&
+            remoteProgressRef.current.currentIndex !== playIndex
+          ) {
             remoteProgressRef.current.currentIndex = playIndex
             remoteProgressRef.current.trackId = targetTrack.trackId
             remoteProgressRef.current.baseSec = 0
@@ -1459,6 +1487,7 @@ const Player = () => {
             remoteProgressRef.current.duration = targetTrack.duration || 0
             remoteProgressRef.current.playing = true
             virtualSecRef.current = 0
+            remoteSyncLockUntilRef.current = Date.now() + 2500
 
             httpClient('/api/output/control', {
               method: 'POST',
@@ -1496,7 +1525,16 @@ const Player = () => {
       // Real remote streaming dispatch: keep local audio DOM powered off and send play to server session
       if (activeOutputDeviceRef.current !== 'local') {
         if (audioInstance) {
+          isSyntheticEventRef.current = true
           audioInstance.muted = true
+          if (!audioInstance.paused) {
+            audioInstance.pause()
+          }
+          audioInstance.currentTime = 0
+          isSyntheticEventRef.current = false
+        }
+        if (Date.now() < remoteSyncLockUntilRef.current) {
+          return
         }
         const targetIndex = playerStateRef.current?.queue?.findIndex(
           (item) => item.trackId === info.trackId,

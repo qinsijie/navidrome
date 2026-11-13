@@ -44,7 +44,7 @@ func CalculateAudioPacingRate(fileSize int64, durationSec float32, suffix string
 	}
 }
 
-// CalculatePCMPacingRate computes the steady-state 1.06x byte rate for uncompressed PCM/WAV streams.
+// CalculatePCMPacingRate computes the steady-state 1.12x byte rate for uncompressed PCM/WAV streams.
 func CalculatePCMPacingRate(sampleRate, channels, bitDepth int) float64 {
 	if sampleRate <= 0 {
 		sampleRate = 44100
@@ -57,9 +57,9 @@ func CalculatePCMPacingRate(sampleRate, channels, bitDepth int) float64 {
 	}
 	byteRate := sampleRate * channels * (bitDepth / 8)
 	if byteRate <= 0 {
-		return 176400 * 1.06
+		return 176400 * 1.12
 	}
-	return float64(byteRate) * 1.06
+	return float64(byteRate) * 1.12
 }
 
 // NewPacedResponseWriter constructs a token-bucket rate pacer wrapping an http.ResponseWriter.
@@ -68,7 +68,7 @@ func NewPacedResponseWriter(ctx context.Context, w http.ResponseWriter, targetBy
 		targetBytesPerSec = 220 * 1024
 	}
 	if burstBytes <= 0 {
-		burstBytes = 128 * 1024 // 128 KB initial burst for instant WAV/audio header parsing and transport priming
+		burstBytes = 512 * 1024 // 512 KB default initial burst
 	}
 	flusher, _ := w.(http.Flusher)
 	return &PacedResponseWriter{
@@ -76,7 +76,7 @@ func NewPacedResponseWriter(ctx context.Context, w http.ResponseWriter, targetBy
 		ctx:            ctx,
 		limiter:        rate.NewLimiter(rate.Limit(targetBytesPerSec), burstBytes),
 		flusher:        flusher,
-		chunkSize:      4 * 1024, // 4 KB fine-grained chunks for smooth Roon-like constant-bitrate streaming
+		chunkSize:      8 * 1024, // 8 KB chunks for smooth Roon-like constant-bitrate streaming with low syscall overhead
 	}
 }
 
