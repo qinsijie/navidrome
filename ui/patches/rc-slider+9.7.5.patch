@@ -1,0 +1,34 @@
+diff --git a/node_modules/rc-slider/es/common/createSlider.js b/node_modules/rc-slider/es/common/createSlider.js
+--- a/node_modules/rc-slider/es/common/createSlider.js
++++ b/node_modules/rc-slider/es/common/createSlider.js
+@@ -244,4 +244,6 @@
+         this.onTouchMoveListener = addEventListener(this.document, 'touchmove', this.onTouchMove);
+         this.onTouchUpListener = addEventListener(this.document, 'touchend', this.onEnd);
++        this.onTouchCancelListener = addEventListener(this.document, 'touchcancel', this.onEnd);
++        this.onWindowBlurListener = addEventListener(window, 'blur', this.onEnd);
+       }
+     }, {
+@@ -257,4 +259,6 @@
+         this.onTouchMoveListener && this.onTouchMoveListener.remove();
+         this.onTouchUpListener && this.onTouchUpListener.remove();
++        this.onTouchCancelListener && this.onTouchCancelListener.remove();
++        this.onWindowBlurListener && this.onWindowBlurListener.remove();
+         this.onMouseMoveListener && this.onMouseMoveListener.remove();
+         this.onMouseUpListener && this.onMouseUpListener.remove();
+diff --git a/node_modules/rc-slider/lib/common/createSlider.js b/node_modules/rc-slider/lib/common/createSlider.js
+--- a/node_modules/rc-slider/lib/common/createSlider.js
++++ b/node_modules/rc-slider/lib/common/createSlider.js
+@@ -273,4 +273,6 @@
+         this.onTouchMoveListener = (0, _addEventListener.default)(this.document, 'touchmove', this.onTouchMove);
+         this.onTouchUpListener = (0, _addEventListener.default)(this.document, 'touchend', this.onEnd);
++        this.onTouchCancelListener = (0, _addEventListener.default)(this.document, 'touchcancel', this.onEnd);
++        this.onWindowBlurListener = (0, _addEventListener.default)(window, 'blur', this.onEnd);
+       }
+     }, {
+@@ -286,4 +288,6 @@
+         this.onTouchMoveListener && this.onTouchMoveListener.remove();
+         this.onTouchUpListener && this.onTouchUpListener.remove();
++        this.onTouchCancelListener && this.onTouchCancelListener.remove();
++        this.onWindowBlurListener && this.onWindowBlurListener.remove();
+         this.onMouseMoveListener && this.onMouseMoveListener.remove();
+         this.onMouseUpListener && this.onMouseUpListener.remove();

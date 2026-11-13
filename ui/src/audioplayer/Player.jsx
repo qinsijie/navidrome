@@ -96,6 +96,20 @@ class PlayerErrorBoundary extends React.Component {
 const SILENT_AUDIO_URI =
   'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
 
+const logAudioGuard = (msg, ...args) => {
+  const d = new Date()
+  const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(d.getMilliseconds()).padStart(3, '0')}`
+  // eslint-disable-next-line no-console
+  console.log(`[${timeStr}] [AudioGuard] ${msg}`, ...args)
+}
+
+const warnAudioGuard = (msg, ...args) => {
+  const d = new Date()
+  const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(d.getMilliseconds()).padStart(3, '0')}`
+  // eslint-disable-next-line no-console
+  console.warn(`[${timeStr}] [AudioGuard] ${msg}`, ...args)
+}
+
 const Player = () => {
   const theme = useCurrentTheme()
   const translate = useTranslate()
@@ -150,6 +164,62 @@ const Player = () => {
   const isUserExplicitlyPausedRef = useRef(false)
   const silentKeepAliveRef = useRef(null)
   const interruptionTimerRef = useRef(null)
+  const needsNetworkResumeRef = useRef(false)
+  const pendingSeekSecRef = useRef(null)
+  const lastWatchdogTimeRef = useRef(0)
+  const watchdogStallCountRef = useRef(0)
+  const lastUserInteractionTimeRef = useRef(0)
+
+  // Global user interaction tracker & slider touchcancel / blur cleanup guard
+  useEffect(() => {
+    const recordUserAction = () => {
+      lastUserInteractionTimeRef.current = Date.now()
+    }
+    const handleSliderTouchStart = (e) => {
+      lastUserInteractionTimeRef.current = Date.now()
+      if (
+        e.target &&
+        (e.target.classList?.contains('rc-slider') ||
+          e.target.closest?.('.rc-slider'))
+      ) {
+        logAudioGuard('[Slider:touch] Touch start on progress slider')
+      }
+    }
+    const handleGlobalTouchEndOrCancel = (e) => {
+      if (e.type === 'touchcancel') {
+        warnAudioGuard(
+          '[Slider:touch] touchcancel event detected! Forcing release of dangling slider drag',
+        )
+        try {
+          document.dispatchEvent(new Event('touchend'))
+        } catch (err) {}
+      } else if (e.type === 'blur') {
+        logAudioGuard(
+          '[Window:blur] Window blur detected, dispatching synthetic touchend & mouseup',
+        )
+        try {
+          document.dispatchEvent(new Event('touchend'))
+          document.dispatchEvent(new Event('mouseup'))
+        } catch (err) {}
+      }
+    }
+
+    window.addEventListener('pointerdown', recordUserAction, { passive: true })
+    window.addEventListener('keydown', recordUserAction, { passive: true })
+    window.addEventListener('touchstart', handleSliderTouchStart, { passive: true })
+    window.addEventListener('touchcancel', handleGlobalTouchEndOrCancel, {
+      passive: true,
+    })
+    window.addEventListener('blur', handleGlobalTouchEndOrCancel, { passive: true })
+
+    return () => {
+      window.removeEventListener('pointerdown', recordUserAction)
+      window.removeEventListener('keydown', recordUserAction)
+      window.removeEventListener('touchstart', handleSliderTouchStart)
+      window.removeEventListener('touchcancel', handleGlobalTouchEndOrCancel)
+      window.removeEventListener('blur', handleGlobalTouchEndOrCancel)
+    }
+  }, [])
 
   const startSilentKeepAlive = useCallback(() => {
     try {
@@ -185,6 +255,83 @@ const Player = () => {
       }
     } catch (e) {}
   }, [])
+
+  const reanchorAudioStream = useCallback((audio, targetSec) => {
+    if (!audio) return
+    try {
+      const curSrc = audio.src
+      if (curSrc && !curSrc.startsWith('blob:') && !curSrc.startsWith('data:')) {
+        const u = new URL(curSrc, window.location.href)
+        u.searchParams.set('_t', String(Date.now()))
+        logAudioGuard(
+          `[StreamReanchor] Re-anchoring stream with _t=${u.searchParams.get('_t')}, targetSec=${targetSec?.toFixed(2)}s`,
+        )
+        audio.src = u.toString()
+        audio.load()
+        pendingSeekSecRef.current = targetSec
+        const p = audio.play()
+        if (p && p.then) {
+          p.then(() => {
+            logAudioGuard('[StreamReanchor] Re-anchored stream play succeeded')
+          }).catch((err) => {
+            warnAudioGuard('[StreamReanchor] Re-anchored stream play rejected:', err)
+          })
+        }
+      }
+    } catch (e) {
+      warnAudioGuard('[StreamReanchor] Re-anchor failed with exception:', e)
+    }
+  }, [])
+
+  // Watchdog: Check every 3 seconds for fake playing (time stalled for >= 4s while supposed to be playing)
+  useInterval(
+    () => {
+      if (
+        activeOutputDeviceRef.current !== 'local' ||
+        isUserExplicitlyPausedRef.current ||
+        !audioInstance ||
+        audioInstance.paused ||
+        audioInstance.ended ||
+        !currentTrackIdRef.current
+      ) {
+        watchdogStallCountRef.current = 0
+        lastWatchdogTimeRef.current = audioInstance?.currentTime || 0
+        return
+      }
+
+      const curTime = audioInstance.currentTime || 0
+      const prevTime = lastWatchdogTimeRef.current
+
+      if (Math.abs(curTime - prevTime) < 0.2) {
+        watchdogStallCountRef.current += 1
+        logAudioGuard(
+          `[Watchdog] Potential playback stall detected (${watchdogStallCountRef.current}/2): curTime=${curTime.toFixed(2)}s, readyState=${audioInstance.readyState}, networkState=${audioInstance.networkState}, onLine=${navigator.onLine}`,
+        )
+        if (watchdogStallCountRef.current >= 2) {
+          warnAudioGuard(
+            `[Watchdog] Playback STALLED for >= 4s! Triggering auto-recovery at ${curTime.toFixed(2)}s...`,
+          )
+          watchdogStallCountRef.current = 0
+          if (!navigator.onLine) {
+            logAudioGuard(
+              '[Watchdog] Network is offline, marking needsNetworkResumeRef and suspending',
+            )
+            needsNetworkResumeRef.current = true
+            lastPositionMsRef.current = Math.floor(curTime * 1000)
+          } else {
+            reanchorAudioStream(audioInstance, curTime)
+          }
+        }
+      } else {
+        watchdogStallCountRef.current = 0
+      }
+      lastWatchdogTimeRef.current = curTime
+    },
+    activeOutputDeviceRef.current === 'local' &&
+      !isUserExplicitlyPausedRef.current
+      ? 3000
+      : null,
+  )
 
   const recordRecentlyPlayed = useCallback((info) => {
     if (!info || info.isPlaceholder) return
@@ -271,11 +418,13 @@ const Player = () => {
         heartbeatTrackId &&
         !stoppedRef.current
       ) {
-        subsonic.reportPlayback(
-          heartbeatTrackId,
-          lastPositionMsRef.current,
-          'playing',
-        )
+        subsonic
+          .reportPlayback(
+            heartbeatTrackId,
+            lastPositionMsRef.current,
+            'playing',
+          )
+          .catch(() => {})
       }
     },
     heartbeatTrackId && activeOutputDeviceRef.current === 'local'
@@ -1343,10 +1492,13 @@ const Player = () => {
                 .then(() =>
                   subsonic.reportPlayback(info.trackId, 0, 'playing'),
                 )
+                .catch(() => {})
             } else {
               const posMs = Math.floor((info.currentTime || 0) * 1000)
               lastPositionMsRef.current = posMs
-              subsonic.reportPlayback(info.trackId, posMs, 'playing')
+              subsonic
+                .reportPlayback(info.trackId, posMs, 'playing')
+                .catch(() => {})
             }
             setHeartbeatTrackId(info.trackId)
           } else {
@@ -1375,11 +1527,9 @@ const Player = () => {
   const onAudioPlayTrackChange = useCallback(() => {
     if (activeOutputDeviceRef.current === 'local') {
       if (currentTrackId) {
-        subsonic.reportPlayback(
-          currentTrackId,
-          lastPositionMsRef.current,
-          'stopped',
-        )
+        subsonic
+          .reportPlayback(currentTrackId, lastPositionMsRef.current, 'stopped')
+          .catch(() => {})
       }
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
@@ -1388,8 +1538,22 @@ const Player = () => {
 
   const onAudioPause = useCallback(
     (info) => {
-      isUserExplicitlyPausedRef.current = true
-      stopSilentKeepAlive()
+      const isRecentUserInteraction =
+        document.visibilityState === 'visible' &&
+        Date.now() - lastUserInteractionTimeRef.current < 1200
+
+      if (isRecentUserInteraction) {
+        isUserExplicitlyPausedRef.current = true
+        logAudioGuard(
+          `[Audio:pause] User clicked pause button in UI. trackId=${currentTrackIdRef.current}`,
+        )
+        stopSilentKeepAlive()
+      } else {
+        logAudioGuard(
+          `[Audio:pause] Passive pause detected (screen off, wireless charging, or network drop). isUserExplicitlyPaused remains false.`,
+        )
+      }
+
       dispatch(currentPlaying(info))
       if (isSyntheticEventRef.current) {
         return
@@ -1401,9 +1565,10 @@ const Player = () => {
       // Do NOT send pause to remote hardware in background!
       if (activeOutputDeviceRef.current !== 'local' && !info.isPlaceholder) {
         const wasPlaying = remoteProgressRef.current.playing
-        const elapsed = remoteProgressRef.current.baseClientTime > 0
-          ? (Date.now() - remoteProgressRef.current.baseClientTime) / 1000
-          : 0
+        const elapsed =
+          remoteProgressRef.current.baseClientTime > 0
+            ? (Date.now() - remoteProgressRef.current.baseClientTime) / 1000
+            : 0
         remoteProgressRef.current.baseSec += Math.max(0, elapsed)
         remoteProgressRef.current.baseClientTime = Date.now()
         remoteProgressRef.current.playing = false
@@ -1425,11 +1590,13 @@ const Player = () => {
       ) {
         const posMs = Math.floor(info.currentTime * 1000)
         lastPositionMsRef.current = posMs
-        subsonic.reportPlayback(currentTrackId, posMs, 'paused')
+        subsonic
+          .reportPlayback(currentTrackId, posMs, 'paused')
+          .catch(() => {})
       }
       setHeartbeatTrackId(null)
     },
-    [dispatch, currentTrackId],
+    [dispatch, currentTrackId, stopSilentKeepAlive],
   )
 
   const onAudioEnded = useCallback(
@@ -1438,7 +1605,9 @@ const Player = () => {
       if (activeOutputDeviceRef.current !== 'local') return
       if (currentTrackId && !info.isRadio) {
         const posMs = Math.floor((info.duration || 0) * 1000)
-        subsonic.reportPlayback(currentTrackId, posMs, 'stopped')
+        subsonic
+          .reportPlayback(currentTrackId, posMs, 'stopped')
+          .catch(() => {})
       }
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
@@ -1487,11 +1656,13 @@ const Player = () => {
   const onBeforeDestroy = useCallback(() => {
     return new Promise((resolve, reject) => {
       if (currentTrackId && !playerStateRef.current?.current?.isRadio) {
-        subsonic.reportPlayback(
-          currentTrackId,
-          lastPositionMsRef.current,
-          'stopped',
-        )
+        subsonic
+          .reportPlayback(
+            currentTrackId,
+            lastPositionMsRef.current,
+            'stopped',
+          )
+          .catch(() => {})
       }
       setHeartbeatTrackId(null)
       setCurrentTrackId(null)
@@ -1614,6 +1785,11 @@ const Player = () => {
     const handlePlay = () => {
       isUserPausedRef.current = false
       isUserExplicitlyPausedRef.current = false
+      needsNetworkResumeRef.current = false
+      watchdogStallCountRef.current = 0
+      logAudioGuard(
+        `[Audio:play] Started. trackId=${currentTrackIdRef.current}, currentTime=${audioInstance?.currentTime?.toFixed(2)}s, network=${navigator.onLine ? 'online' : 'offline'}`,
+      )
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'playing'
       }
@@ -1635,6 +1811,9 @@ const Player = () => {
         !audioInstance.ended &&
         currentTrackIdRef.current
       ) {
+        logAudioGuard(
+          `[LocalAudio] Entering passive interruption recovery queue (1500ms)... currentTime=${audioInstance?.currentTime?.toFixed(2)}s`,
+        )
         if (interruptionTimerRef.current) clearTimeout(interruptionTimerRef.current)
         interruptionTimerRef.current = setTimeout(() => {
           if (
@@ -1645,19 +1824,39 @@ const Player = () => {
             !audioInstance.ended &&
             currentTrackIdRef.current
           ) {
-            console.log('[LocalAudio] Auto-resuming after passive interruption (1500ms)...')
+            logAudioGuard(
+              '[LocalAudio] Passive interruption: attempting audioInstance.play() after 1500ms...',
+            )
             const p = audioInstance.play()
             if (p && p.then) {
               p.then(() => {
-                console.log('[LocalAudio] Passive interruption successfully auto-resumed')
+                logAudioGuard(
+                  '[LocalAudio] Passive interruption successfully auto-resumed!',
+                )
+                needsNetworkResumeRef.current = false
               }).catch((err) => {
-                if (err.name !== 'AbortError') {
-                  console.warn('[LocalAudio] Interruption auto-resume failed/rejected (call or focus lost), fusing to paused state:', err)
+                if (err.name === 'NotAllowedError') {
+                  warnAudioGuard(
+                    '[LocalAudio] Audio focus permanently revoked (call or external media). Fusing to paused state:',
+                    err,
+                  )
+                  // One-shot failure breaker: do NOT retry in a loop!
+                  isUserExplicitlyPausedRef.current = true
+                  isUserPausedRef.current = true
+                  stopSilentKeepAlive()
+                } else {
+                  // Network drop, AbortError, or decode error
+                  warnAudioGuard(
+                    '[LocalAudio] Passive auto-resume delayed by network/system drop. Marking needsNetworkResume:',
+                    err,
+                  )
+                  needsNetworkResumeRef.current = true
+                  if (audioInstance.currentTime > 0) {
+                    lastPositionMsRef.current = Math.floor(
+                      audioInstance.currentTime * 1000,
+                    )
+                  }
                 }
-                // One-shot failure breaker: do NOT retry in a loop!
-                isUserExplicitlyPausedRef.current = true
-                isUserPausedRef.current = true
-                stopSilentKeepAlive()
               })
             }
           }
@@ -1696,7 +1895,10 @@ const Player = () => {
     const handleRestorePosition = () => {
       const trackId = currentTrackIdRef.current
       let savedSec = (lastPositionMsRef.current || 0) / 1000
-      if (savedSec <= 2 && trackId) {
+      if (pendingSeekSecRef.current != null && pendingSeekSecRef.current > 0) {
+        savedSec = pendingSeekSecRef.current
+        pendingSeekSecRef.current = null
+      } else if (savedSec <= 2 && trackId) {
         try {
           const val = parseFloat(sessionStorage.getItem('nd_pos_' + trackId))
           if (!isNaN(val) && val > 2) {
@@ -1708,57 +1910,93 @@ const Player = () => {
       if (
         savedSec > 2 &&
         audioInstance &&
-        (audioInstance.currentTime === 0 || audioInstance.currentTime == null) &&
         !audioInstance.ended &&
         audioInstance.duration &&
         savedSec < audioInstance.duration - 2
       ) {
         try {
+          logAudioGuard(`[Audio:restorePosition] Seeking to ${savedSec.toFixed(2)}s`)
           audioInstance.currentTime = savedSec
         } catch (e) {}
       }
     }
 
     // Recover playback position on mobile Webview/tab resume if stream stalled or reset to 0
-    const handleVisibilityOrResume = () => {
+    const handleVisibilityOrResume = (evt) => {
+      const evtType = evt?.type || 'visibilitychange'
+      logAudioGuard(
+        `[Lifecycle:${evtType}] Event fired: visibilityState=${document.visibilityState}, onLine=${navigator.onLine}, needsNetworkResume=${needsNetworkResumeRef.current}, userPaused=${isUserExplicitlyPausedRef.current}`,
+      )
+
       if (document.visibilityState === 'visible' && audioInstance) {
-        if (
+        const needsResume =
           activeOutputDeviceRef.current === 'local' &&
           !isUserExplicitlyPausedRef.current &&
-          audioInstance.paused &&
+          currentTrackIdRef.current &&
           !audioInstance.ended &&
-          currentTrackIdRef.current
-        ) {
-          audioInstance.play().catch(() => {})
+          (audioInstance.paused ||
+            needsNetworkResumeRef.current ||
+            audioInstance.error)
+
+        if (needsResume) {
+          const targetSec = (lastPositionMsRef.current || 0) / 1000
+          logAudioGuard(
+            `[Lifecycle] Restoring playback after visibility/online event at ${targetSec.toFixed(2)}s...`,
+          )
+          needsNetworkResumeRef.current = false
+          if (
+            audioInstance.error ||
+            !audioInstance.src ||
+            audioInstance.networkState === 3
+          ) {
+            reanchorAudioStream(audioInstance, targetSec)
+          } else {
+            const p = audioInstance.play()
+            if (p && p.then) {
+              p.catch((err) => {
+                warnAudioGuard(
+                  '[Lifecycle] Direct play failed, attempting stream re-anchor:',
+                  err,
+                )
+                reanchorAudioStream(audioInstance, targetSec)
+              })
+            }
+          }
         }
+
         if (!audioInstance.paused) {
           acquireWakeLock()
           startSilentKeepAlive()
         }
-        const trackId = currentTrackIdRef.current
-        let savedPosSec = (lastPositionMsRef.current || 0) / 1000
-        if (savedPosSec <= 2 && trackId) {
-          try {
-            const val = parseFloat(sessionStorage.getItem('nd_pos_' + trackId))
-            if (!isNaN(val) && val > 2) {
-              savedPosSec = val
-            }
-          } catch (e) {}
-        }
-        if (
-          savedPosSec > 2 &&
-          (audioInstance.currentTime === 0 || audioInstance.currentTime == null) &&
-          !audioInstance.ended &&
-          trackId
-        ) {
-          try {
-            audioInstance.currentTime = savedPosSec
-            if (!audioInstance.paused) {
-              audioInstance.play().catch(() => {})
-            }
-          } catch (e) {
-            // Seek failed or media loading
-          }
+        handleRestorePosition()
+      }
+    }
+
+    const handleStalled = () => {
+      warnAudioGuard(
+        `[Audio:stalled] Buffer stalled at ${audioInstance?.currentTime?.toFixed(2)}s, readyState=${audioInstance?.readyState}, networkState=${audioInstance?.networkState}`,
+      )
+    }
+
+    const handleWaiting = () => {
+      logAudioGuard(
+        `[Audio:waiting] Waiting for media buffer at ${audioInstance?.currentTime?.toFixed(2)}s`,
+      )
+    }
+
+    const handleError = () => {
+      const err = audioInstance?.error
+      warnAudioGuard(`[Audio:error] code=${err?.code}, message=${err?.message}`)
+      if (
+        activeOutputDeviceRef.current === 'local' &&
+        !isUserExplicitlyPausedRef.current &&
+        currentTrackIdRef.current
+      ) {
+        needsNetworkResumeRef.current = true
+        if (audioInstance?.currentTime > 0) {
+          lastPositionMsRef.current = Math.floor(
+            audioInstance.currentTime * 1000,
+          )
         }
       }
     }
@@ -1768,7 +2006,9 @@ const Player = () => {
       [
         'play',
         () => {
+          logAudioGuard('[MediaSession:play] Lockscreen play triggered')
           isUserExplicitlyPausedRef.current = false
+          needsNetworkResumeRef.current = false
           startSilentKeepAlive()
           audioInstance.play().catch(() => {})
         },
@@ -1776,6 +2016,7 @@ const Player = () => {
       [
         'pause',
         () => {
+          logAudioGuard('[MediaSession:pause] Lockscreen pause triggered')
           isUserExplicitlyPausedRef.current = true
           stopSilentKeepAlive()
           audioInstance.pause()
@@ -1784,7 +2025,9 @@ const Player = () => {
       [
         'previoustrack',
         () => {
+          logAudioGuard('[MediaSession:previoustrack] Prev track triggered')
           isUserExplicitlyPausedRef.current = false
+          needsNetworkResumeRef.current = false
           if (typeof audioInstance.playPrev === 'function') {
             audioInstance.playPrev()
           }
@@ -1793,7 +2036,9 @@ const Player = () => {
       [
         'nexttrack',
         () => {
+          logAudioGuard('[MediaSession:nexttrack] Next track triggered')
           isUserExplicitlyPausedRef.current = false
+          needsNetworkResumeRef.current = false
           if (typeof audioInstance.playNext === 'function') {
             audioInstance.playNext()
           }
@@ -1845,8 +2090,12 @@ const Player = () => {
     audioInstance.addEventListener('durationchange', updatePositionState)
     audioInstance.addEventListener('loadedmetadata', handleRestorePosition)
     audioInstance.addEventListener('canplay', handleRestorePosition)
+    audioInstance.addEventListener('stalled', handleStalled)
+    audioInstance.addEventListener('waiting', handleWaiting)
+    audioInstance.addEventListener('error', handleError)
     document.addEventListener('visibilitychange', handleVisibilityOrResume)
     window.addEventListener('online', handleVisibilityOrResume)
+    window.addEventListener('offline', handleVisibilityOrResume)
 
     return () => {
       audioInstance.removeEventListener('play', handlePlay)
@@ -1856,8 +2105,12 @@ const Player = () => {
       audioInstance.removeEventListener('durationchange', updatePositionState)
       audioInstance.removeEventListener('loadedmetadata', handleRestorePosition)
       audioInstance.removeEventListener('canplay', handleRestorePosition)
+      audioInstance.removeEventListener('stalled', handleStalled)
+      audioInstance.removeEventListener('waiting', handleWaiting)
+      audioInstance.removeEventListener('error', handleError)
       document.removeEventListener('visibilitychange', handleVisibilityOrResume)
       window.removeEventListener('online', handleVisibilityOrResume)
+      window.removeEventListener('offline', handleVisibilityOrResume)
     }
   }, [audioInstance])
 
@@ -1877,7 +2130,9 @@ const Player = () => {
       }
       const posMs = Math.floor((audioInstance.currentTime || 0) * 1000)
       const state = audioInstance.paused ? 'paused' : 'playing'
-      subsonic.reportPlayback(currentTrackIdRef.current, posMs, state)
+      subsonic
+        .reportPlayback(currentTrackIdRef.current, posMs, state)
+        .catch(() => {})
     }
     const handleSeeked = () => {
       if (timer) clearTimeout(timer)

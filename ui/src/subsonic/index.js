@@ -45,15 +45,17 @@ const reportPlaybackUrl = (mediaId, positionMs, state) =>
   url('reportPlayback', null, { mediaId, mediaType: 'song', positionMs, state })
 
 const reportPlayback = (mediaId, positionMs, state) =>
-  httpClient(reportPlaybackUrl(mediaId, positionMs, state))
+  httpClient(reportPlaybackUrl(mediaId, positionMs, state)).catch(() => {})
 
 const reportPlaybackKeepalive = (mediaId, positionMs, state) => {
   const u = reportPlaybackUrl(mediaId, positionMs, state)
   if (u) {
-    fetch(baseUrl(u), {
-      keepalive: true,
-      headers: { [clientUniqueIdHeader]: clientUniqueId },
-    })
+    try {
+      fetch(baseUrl(u), {
+        keepalive: true,
+        headers: { [clientUniqueIdHeader]: clientUniqueId },
+      }).catch(() => {})
+    } catch (e) {}
   }
 }
 
