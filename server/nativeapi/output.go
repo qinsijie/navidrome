@@ -571,32 +571,10 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 
 		for i := range req.Tracks {
 			t := &req.Tracks[i]
-			if t.Stream == "" && t.TrackID != "" {
-				t.Stream = fmt.Sprintf("http://%s:%d/api/output/stream/%s", outboundIP, port, t.TrackID)
-			} else if strings.HasPrefix(t.Stream, "/") {
-				t.Stream = fmt.Sprintf("http://%s:%d%s", outboundIP, port, t.Stream)
-			}
-			isDSD := false
-			if t.TrackID != "" {
-				if mf, err := api.ds.MediaFile().Get(r.Context(), t.TrackID); err == nil && mf != nil {
-					isDSD = output.IsDSDMedia(mf.Suffix, mf.Path)
-					t.Stream = appendFormatParam(t.Stream, mf.Suffix)
-					if t.Duration <= 0 {
-						t.Duration = float64(mf.Duration)
-					}
-					if t.Title == "" {
-						t.Title = mf.Title
-					}
-					if t.Artist == "" {
-						t.Artist = mf.Artist
-					}
-					if t.Album == "" {
-						t.Album = mf.Album
-					}
-				}
-			}
-			if !isDSD {
-				t.Stream = appendPCMModeIfHQPlayer(t.Stream, isHQPlayer, mgr)
+			if err := validateAndResolveOutputTrack(r.Context(), api, outboundIP, port, isHQPlayer, mgr, t); err != nil {
+				log.Warn(r.Context(), "Rejected invalid track in /output/queue", "index", i, "trackId", t.TrackID, "streamUrl", t.Stream, err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
 			}
 		}
 
@@ -687,40 +665,6 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			req.TimeOffset = 0
 		}
 
-		if req.StreamURL == "" && req.TrackID != "" {
-			targetHost := mgr.GetActiveTargetHost()
-			outboundIP := output.DetectOutboundIP(targetHost)
-			req.StreamURL = fmt.Sprintf("http://%s:%d/api/output/stream/%s", outboundIP, conf.Server.Port, req.TrackID)
-		}
-
-		resolvedURL := resolveOutboundURL(r, req.StreamURL, mgr.GetActiveTargetHost())
-		duration := req.Duration
-		if req.TrackID != "" {
-			if mf, err := api.ds.MediaFile().Get(r.Context(), req.TrackID); err == nil && mf != nil {
-				resolvedURL = appendFormatParam(resolvedURL, mf.Suffix)
-				if duration <= 0 {
-					duration = float64(mf.Duration)
-				}
-				if req.Title == "" {
-					req.Title = mf.Title
-				}
-				if req.Artist == "" {
-					req.Artist = mf.Artist
-				}
-				if req.Album == "" {
-					req.Album = mf.Album
-				}
-			}
-		}
-
-		meta := output.TrackMetadata{
-			TrackID:  req.TrackID,
-			Title:    req.Title,
-			Artist:   req.Artist,
-			Album:    req.Album,
-			Stream:   resolvedURL,
-			Duration: duration,
-		}
 		targetChannel := output.NormalizeChannel(req.Channel, req.DeviceID)
 		targetDev := req.DeviceID
 		if targetDev == "" {
@@ -731,18 +675,31 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 			}
 		}
 
+		targetHost := mgr.GetActiveTargetHost()
+		outboundIP := output.DetectOutboundIP(targetHost)
+		isHQPlayer := targetChannel == "remote" && (targetDev == "hqplayer" || mgr.GetActiveDevice() == "hqplayer")
+
+		meta := output.TrackMetadata{
+			TrackID:  req.TrackID,
+			Title:    req.Title,
+			Artist:   req.Artist,
+			Album:    req.Album,
+			Stream:   req.StreamURL,
+			Duration: req.Duration,
+		}
+		if err := validateAndResolveOutputTrack(r.Context(), api, outboundIP, conf.Server.Port, isHQPlayer, mgr, &meta); err != nil {
+			log.Warn(r.Context(), "Rejected invalid track in /output/play", "trackId", req.TrackID, "streamUrl", req.StreamURL, err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		resolvedURL := resolveOutboundURL(r, meta.Stream, targetHost)
+		meta.Stream = resolvedURL
+		req.TrackID = meta.TrackID
+		req.Title = meta.Title
+		req.Artist = meta.Artist
+		req.Album = meta.Album
+
 		if targetChannel == "remote" {
-			isHQPlayer := targetDev == "hqplayer" || mgr.GetActiveDevice() == "hqplayer"
-			isDSD := false
-			if req.TrackID != "" {
-				if mf, err := api.ds.MediaFile().Get(r.Context(), req.TrackID); err == nil && mf != nil {
-					isDSD = output.IsDSDMedia(mf.Suffix, mf.Path)
-				}
-			}
-			if !isDSD {
-				resolvedURL = appendPCMModeIfHQPlayer(resolvedURL, isHQPlayer, mgr)
-				meta.Stream = resolvedURL
-			}
 			if isHQPlayer {
 				canAccess, owner := mgr.CheckHQPlayerAccess(user.ID, user.UserName, req.ForceTakeover)
 				if !canAccess {
@@ -921,4 +878,68 @@ func (api *Router) addOutputRoutes(r chi.Router) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
+}
+
+func isInvalidOutputTrackID(id string) bool {
+	trimmed := strings.TrimSpace(id)
+	return trimmed == "" || strings.EqualFold(trimmed, "undefined") || strings.EqualFold(trimmed, "null")
+}
+
+func hasInvalidOutputStreamURL(streamURL string) bool {
+	lower := strings.ToLower(strings.TrimSpace(streamURL))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "undefined.wav") ||
+		strings.Contains(lower, "/stream/undefined") ||
+		strings.Contains(lower, "/stream/null")
+}
+
+func validateAndResolveOutputTrack(
+	ctx context.Context,
+	api *Router,
+	outboundIP string,
+	port int,
+	isHQPlayer bool,
+	mgr *output.Manager,
+	t *output.TrackMetadata,
+) error {
+	t.TrackID = strings.TrimSpace(t.TrackID)
+	t.Stream = strings.TrimSpace(t.Stream)
+	if isInvalidOutputTrackID(t.TrackID) {
+		return fmt.Errorf("invalid trackId: %q", t.TrackID)
+	}
+
+	needRebuild := t.Stream == "" || hasInvalidOutputStreamURL(t.Stream)
+	mf, err := api.ds.MediaFile().Get(ctx, t.TrackID)
+	if needRebuild {
+		if err != nil || mf == nil {
+			return fmt.Errorf("cannot resolve stream for trackId %q: media file not found", t.TrackID)
+		}
+		t.Stream = fmt.Sprintf("http://%s:%d/api/output/stream/%s", outboundIP, port, t.TrackID)
+	} else if strings.HasPrefix(t.Stream, "/") {
+		t.Stream = fmt.Sprintf("http://%s:%d%s", outboundIP, port, t.Stream)
+	}
+
+	isDSD := false
+	if err == nil && mf != nil {
+		isDSD = output.IsDSDMedia(mf.Suffix, mf.Path)
+		t.Stream = appendFormatParam(t.Stream, mf.Suffix)
+		if t.Duration <= 0 {
+			t.Duration = float64(mf.Duration)
+		}
+		if t.Title == "" {
+			t.Title = mf.Title
+		}
+		if t.Artist == "" {
+			t.Artist = mf.Artist
+		}
+		if t.Album == "" {
+			t.Album = mf.Album
+		}
+	}
+	if !isDSD {
+		t.Stream = appendPCMModeIfHQPlayer(t.Stream, isHQPlayer, mgr)
+	}
+	return nil
 }

@@ -41,6 +41,11 @@ import {
   DIRECT_STREAM_FORMATS,
 } from '../transcode'
 import { httpClient } from '../dataProvider'
+import {
+  isValidTrackId,
+  resolveTrackId,
+  buildRemoteOutputTrack,
+} from './trackIdUtils'
 
 class PlayerErrorBoundary extends React.Component {
   constructor(props) {
@@ -99,6 +104,34 @@ class PlayerErrorBoundary extends React.Component {
 
 const SILENT_AUDIO_URI =
   'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
+
+const buildMappedReduxTrack = (t, isRemote) => {
+  const tid = resolveTrackId(t)
+  if (!tid) return null
+  const title = t.title || t.name || t.song?.title || ''
+  const artist = t.artist || t.singer || t.song?.artist || ''
+  const album = t.album || t.song?.album || ''
+  const duration = t.duration || t.song?.duration || 0
+  return {
+    id: tid,
+    trackId: tid,
+    uuid: tid,
+    name: title,
+    song: {
+      id: tid,
+      title,
+      artist,
+      album,
+      duration,
+    },
+    singer: artist,
+    duration,
+    musicSrc: isRemote ? '' : subsonic.streamUrl(tid) || SILENT_AUDIO_URI,
+    cover: sanitizeImageUrl(
+      t.cover || t.coverUrl || subsonic.getCoverArtUrl({ id: tid }, 300),
+    ),
+  }
+}
 
 const logAudioGuard = (msg, ...args) => {
   const d = new Date()
@@ -518,31 +551,15 @@ const Player = () => {
         httpClient('/api/player/terminal-queue')
           .then(({ json }) => {
             if (json && json.found && json.queue && json.queue.length > 0) {
+              const isRemote = activeOutputDeviceRef.current !== 'local'
+              const restoredQueue = json.queue
+                .map((t) => buildMappedReduxTrack(t, isRemote))
+                .filter(Boolean)
+              if (restoredQueue.length === 0) return
               const idx =
-                json.currentIndex >= 0 && json.currentIndex < json.queue.length
+                json.currentIndex >= 0 && json.currentIndex < restoredQueue.length
                   ? json.currentIndex
                   : 0
-              const restoredQueue = json.queue.map((t) => ({
-                trackId: t.trackId,
-                uuid: t.trackId,
-                name: t.title,
-                singer: t.artist,
-                duration: t.duration,
-                cover: sanitizeImageUrl(
-                  t.cover || t.coverUrl || subsonic.getCoverArtUrl({ id: t.trackId }, 300),
-                ),
-                musicSrc:
-            activeOutputDeviceRef.current !== 'local'
-              ? ''
-              : subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
-                song: {
-                  id: t.trackId,
-                  title: t.title,
-                  artist: t.artist,
-                  album: t.album,
-                  duration: t.duration,
-                },
-              }))
               dispatch(syncQueue(restoredQueue[idx], restoredQueue))
               if (json.timeOffset > 0) {
                 lastPositionMsRef.current = Math.floor(json.timeOffset * 1000)
@@ -626,44 +643,32 @@ const Player = () => {
       const queue = channelData.queue || []
       if (!Array.isArray(queue) || queue.length === 0) return
 
+      const isRemote = activeOutputDeviceRef.current !== 'local'
+      const mappedList = queue
+        .map((t) => buildMappedReduxTrack(t, isRemote))
+        .filter(Boolean)
+      if (mappedList.length === 0) return
+
       const currentQueue = playerStateRef.current?.queue || []
-      const serverQueueKey = queue.map((t) => t.trackId).join(',')
-      const localQueueKey = currentQueue.map((t) => t.trackId).join(',')
+      const serverQueueKey = mappedList.map((t) => t.trackId).join(',')
+      const localQueueKey = currentQueue
+        .map((t) => resolveTrackId(t))
+        .filter(Boolean)
+        .join(',')
       const targetIdx =
         channelData.currentIndex >= 0 &&
-        channelData.currentIndex < queue.length
+        channelData.currentIndex < mappedList.length
           ? channelData.currentIndex
           : 0
-      const targetTrack = queue[targetIdx]
+      const targetTrack = mappedList[targetIdx]
       const indexChanged =
         playerStateRef.current?.savedPlayIndex !== targetIdx ||
-        playerStateRef.current?.current?.trackId !== targetTrack?.trackId
+        resolveTrackId(playerStateRef.current?.current) !== targetTrack?.trackId
 
       if (
         serverQueueKey &&
         (serverQueueKey !== localQueueKey || indexChanged || force)
       ) {
-        const mappedList = queue.map((t) => ({
-          trackId: t.trackId,
-          uuid: t.trackId,
-          name: t.title,
-          song: {
-            id: t.trackId,
-            title: t.title,
-            artist: t.artist,
-            album: t.album,
-            duration: t.duration,
-          },
-          singer: t.artist,
-          duration: t.duration,
-          musicSrc:
-            activeOutputDeviceRef.current !== 'local'
-              ? ''
-              : subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
-          cover: sanitizeImageUrl(
-            t.cover || t.coverUrl || subsonic.getCoverArtUrl({ id: t.trackId }, 300),
-          ),
-        }))
         const syncMode = playerStateRef.current?.mode || 'orderLoop'
         lastSyncedQueueKeyRef.current = `remote_${activeOutputDeviceRef.current}_${serverQueueKey}_${targetIdx}_${syncMode}`
         isServerSyncRef.current = true
@@ -733,22 +738,25 @@ const Player = () => {
       }
 
       // 3. Synchronize remote progress clock
+      const resolvedTrackId =
+        resolveTrackId(remoteData.track) ||
+        (isValidTrackId(remoteData.trackId) ? String(remoteData.trackId).trim() : null)
       remoteProgressRef.current.baseSec = remoteData.timeOffset || 0
       remoteProgressRef.current.baseClientTime =
         remoteData.startedAt > 0 ? remoteData.startedAt : Date.now()
       remoteProgressRef.current.playing = remoteData.state === 'playing'
       remoteProgressRef.current.duration =
         remoteData.duration || remoteData.track?.duration || 0
-      remoteProgressRef.current.trackId =
-        remoteData.trackId || remoteData.track?.trackId || null
+      remoteProgressRef.current.trackId = resolvedTrackId
       remoteProgressRef.current.currentIndex =
         remoteData.currentIndex ?? -1
 
       // 4. Sync Redux current track so player UI bar updates
-      const trackId = remoteProgressRef.current.trackId
-      if (trackId && playerStateRef.current?.current?.trackId !== trackId) {
+      const trackId = resolvedTrackId
+      if (trackId && resolveTrackId(playerStateRef.current?.current) !== trackId) {
         const track = remoteData.track || remoteData
         const currentObj = {
+          id: trackId,
           trackId,
           uuid: trackId,
           name: track.title,
@@ -964,26 +972,15 @@ const Player = () => {
           httpClient('/api/player/terminal-queue')
             .then(({ json }) => {
               if (json && json.found && json.queue && json.queue.length > 0) {
-                const idx = json.currentIndex >= 0 && json.currentIndex < json.queue.length ? json.currentIndex : 0
-                const restoredQueue = json.queue.map((t) => ({
-                  trackId: t.trackId,
-                  uuid: t.trackId,
-                  name: t.title,
-                  singer: t.artist,
-                  duration: t.duration,
-                  cover: sanitizeImageUrl(t.cover || t.coverUrl || subsonic.getCoverArtUrl({ id: t.trackId }, 300)),
-                  musicSrc:
-            activeOutputDeviceRef.current !== 'local'
-              ? ''
-              : subsonic.streamUrl(t.trackId) || SILENT_AUDIO_URI,
-                  song: {
-                    id: t.trackId,
-                    title: t.title,
-                    artist: t.artist,
-                    album: t.album,
-                    duration: t.duration,
-                  },
-                }))
+                const isRemote = activeOutputDeviceRef.current !== 'local'
+                const restoredQueue = json.queue
+                  .map((t) => buildMappedReduxTrack(t, isRemote))
+                  .filter(Boolean)
+                if (restoredQueue.length === 0) return
+                const idx =
+                  json.currentIndex >= 0 && json.currentIndex < restoredQueue.length
+                    ? json.currentIndex
+                    : 0
                 dispatch(syncQueue(restoredQueue[idx], restoredQueue))
               }
             })
@@ -1149,24 +1146,20 @@ const Player = () => {
     if (!playerState.queue || !playerState.queue.length) return
 
     const targetDevice = activeOutputDeviceRef.current
-    const currentIdx =
-      playerState.playIndex ?? playerState.savedPlayIndex ?? 0
-    const queueKey = `remote_${targetDevice}_${playerState.queue.map((t) => t.trackId).join(',')}_${currentIdx}_${playerState.mode}`
+    const payloadTracks = playerState.queue.map(buildRemoteOutputTrack).filter(Boolean)
+    if (payloadTracks.length === 0) {
+      warnAudioGuard('Blocked remote queue push: no valid trackId in queue')
+      return
+    }
+    const rawIdx = playerState.playIndex ?? playerState.savedPlayIndex ?? 0
+    const currentIdx = Math.min(Math.max(0, rawIdx), payloadTracks.length - 1)
+    const queueKey = `remote_${targetDevice}_${payloadTracks.map((t) => t.trackId).join(',')}_${currentIdx}_${playerState.mode}`
     if (isServerSyncRef.current) {
       lastSyncedQueueKeyRef.current = queueKey
       return
     }
     if (lastSyncedQueueKeyRef.current === queueKey) return
     lastSyncedQueueKeyRef.current = queueKey
-
-    const payloadTracks = playerState.queue.map((item) => ({
-      trackId: item.trackId,
-      title: item.song?.title || item.name || '',
-      artist: item.song?.artist || item.singer || '',
-      album: item.song?.album || '',
-      duration: item.duration || item.song?.duration || 0,
-      streamUrl: `/api/output/stream/${item.trackId}`,
-    }))
 
     const isPlaying =
       audioInstance && !audioInstance.paused && !audioInstance.ended
@@ -1235,14 +1228,24 @@ const Player = () => {
       clearTimeout(saveTerminalQueueTimerRef.current)
     }
     saveTerminalQueueTimerRef.current = setTimeout(() => {
-      const tracks = playerState.queue.map((t) => ({
-        trackId: t.trackId,
-        title: t.song?.title || t.name || '',
-        artist: t.song?.artist || t.singer || '',
-        album: t.song?.album || '',
-        duration: t.duration || t.song?.duration || 0,
-      }))
-      const idx = playerState.playIndex ?? playerState.savedPlayIndex ?? 0
+      const tracks = playerState.queue
+        .map((t) => {
+          const tid = resolveTrackId(t)
+          if (!isValidTrackId(tid)) return null
+          return {
+            trackId: tid,
+            title: t.song?.title || t.name || t.title || '',
+            artist: t.song?.artist || t.singer || t.artist || '',
+            album: t.song?.album || t.album || '',
+            duration: t.duration || t.song?.duration || 0,
+          }
+        })
+        .filter(Boolean)
+      if (tracks.length === 0) return
+      const idx = Math.min(
+        Math.max(0, playerState.playIndex ?? playerState.savedPlayIndex ?? 0),
+        tracks.length - 1,
+      )
       const offset = audioInstanceRef.current?.currentTime || 0
       httpClient('/api/player/terminal-queue', {
         method: 'POST',
@@ -2004,16 +2007,16 @@ const Player = () => {
     )
     if (!confirm) return
 
-    const payloadTracks = localSnap.queue.map((item) => ({
-      trackId: item.trackId,
-      title: item.song?.title || item.name || '',
-      artist: item.song?.artist || item.singer || '',
-      album: item.song?.album || '',
-      duration: item.duration || item.song?.duration || 0,
-      streamUrl: `/api/output/stream/${item.trackId}`,
-    }))
+    const payloadTracks = localSnap.queue.map(buildRemoteOutputTrack).filter(Boolean)
+    if (payloadTracks.length === 0) {
+      notify('本机列表中没有有效曲目 ID，无法推送', 'warning')
+      return
+    }
 
-    const startIdx = localSnap.playIndex || 0
+    const startIdx = Math.min(
+      Math.max(0, localSnap.playIndex || 0),
+      payloadTracks.length - 1,
+    )
     httpClient('/api/output/queue', {
       method: 'POST',
       body: JSON.stringify({
